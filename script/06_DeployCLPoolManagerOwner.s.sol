@@ -34,10 +34,10 @@ contract DeployCLPoolManagerOwnerScript is BaseScript {
         address clPoolManager = getAddressFromConfig("clPoolManager");
         console.log("clPoolManager address: ", address(clPoolManager));
 
-        /// @dev append the vault address to the creationCode
+        /// @dev append the poolManager address to the creationCode
         bytes memory creationCode = abi.encodePacked(type(CLPoolManagerOwner).creationCode, abi.encode(clPoolManager));
 
-        /// @dev prepare the payload to transfer ownership from deployment contract to real deployer address
+        /// @dev prepare the payload to transfer ownership from deployment contract to poolOwner address
         bytes memory afterDeploymentExecutionPayload =
             abi.encodeWithSelector(Ownable.transferOwnership.selector, poolOwner);
 

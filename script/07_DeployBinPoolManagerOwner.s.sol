@@ -34,10 +34,10 @@ contract DeployBinPoolManagerOwnerScript is BaseScript {
         address binPoolManager = getAddressFromConfig("binPoolManager");
         console.log("binPoolManager address: ", address(binPoolManager));
 
-        /// @dev append the vault address to the creationCode
+        /// @dev append poolManager address to the creationCode
         bytes memory creationCode = abi.encodePacked(type(BinPoolManagerOwner).creationCode, abi.encode(binPoolManager));
 
-        /// @dev prepare the payload to transfer ownership from deployment contract to real deployer address
+        /// @dev prepare the payload to transfer ownership from deployment contract to poolOwner address
         bytes memory afterDeploymentExecutionPayload =
             abi.encodeWithSelector(Ownable.transferOwnership.selector, poolOwner);
 
