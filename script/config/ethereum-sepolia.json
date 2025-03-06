@@ -6,5 +6,7 @@
     "binPoolManager": "0x",
     "protocolFeeControllerOwner": "0x",
     "clProtocolFeeController": "0x",
-    "binProtocolFeeController": "0x"
+    "binProtocolFeeController": "0x",
+    "clPoolManagerOwnerContract": "0x",
+    "binPoolManagerOwnerContract": "0x"
 }
