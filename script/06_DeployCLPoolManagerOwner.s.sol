@@ -15,7 +15,7 @@ import {CLPoolManagerOwner} from "../src/pool-cl/CLPoolManagerOwner.sol";
  *     --slow \
  *     --verify
  *
- * Step 2: (Manual) Ask 'poolOwner' proceed to CLPoolManagerOwner.acceptOwnership 
+ * Step 2: (Manual) Ask 'poolOwner' proceed to CLPoolManagerOwner.acceptOwnership
  *
  * Step 3: (Manual) Proceed to call clPoolManager.transferOwnership(clPoolManagerOwner)
  */

@@ -15,8 +15,8 @@ import {BinPoolManagerOwner} from "../src/pool-bin/BinPoolManagerOwner.sol";
  *     --slow \
  *     --verify
  *
- * Step 2: (Manual) Ask 'poolOwner' proceed to BinPoolManagerOwner.acceptOwnership 
-
+ * Step 2: (Manual) Ask 'poolOwner' proceed to BinPoolManagerOwner.acceptOwnership
+ *
  * Step 3: (Manual) Proceed to call binPoolManager.transferOwnership(binPoolManagerOwner)
  */
 contract DeployBinPoolManagerOwnerScript is BaseScript {
