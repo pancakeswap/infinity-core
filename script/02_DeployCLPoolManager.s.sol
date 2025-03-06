@@ -15,7 +15,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  *     --rpc-url $RPC_URL \
  *     --broadcast \
  *     --slow \
- *     --verify 
+ *     --verify
  */
 contract DeployCLPoolManagerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {

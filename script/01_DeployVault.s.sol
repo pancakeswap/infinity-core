@@ -14,8 +14,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  *     --rpc-url $RPC_URL \
  *     --broadcast \
  *     --slow \
- *     --verify 
-
+ *     --verify
+ *
  * Step 2: Proceed to poolOwner contract and call vault.acceptOwnership
  */
 contract DeployVaultScript is BaseScript {
