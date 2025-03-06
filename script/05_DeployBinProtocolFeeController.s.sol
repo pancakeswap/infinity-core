@@ -13,17 +13,14 @@ import {IProtocolFees} from "../src/interfaces/IProtocolFees.sol";
  * forge script script/05_DeployBinProtocolFeeController.s.sol:DeployBinProtocolFeeControllerScript -vvv \
  *     --rpc-url $RPC_URL \
  *     --broadcast \
- *     --slow
+ *     --slow \
+ *     --verify
  *
- * Step 2: Verify
- * forge verify-contract <address> ProtocolFeeController --watch --chain <chain_id> \
- *    --constructor-args `cast abi-encode "Constructor(address)" <binPoolManager_addr>`
- *
- * Step 3: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
+ * Step 2: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
  */
 contract DeployBinProtocolFeeControllerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE-CORE/BinProtocolFeeController/0.97");
+        return keccak256("INFINITY-CORE-CORE/BinProtocolFeeController/1.0.0");
     }
 
     function run() public {

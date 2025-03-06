@@ -13,16 +13,14 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  * forge script script/01_DeployVault.s.sol:DeployVaultScript -vvv \
  *     --rpc-url $RPC_URL \
  *     --broadcast \
- *     --slow
+ *     --slow \
+ *     --verify
  *
- * Step 2: Verify there is no need for --constructor-args as there are no constructor arguments for Vault
- * forge verify-contract <address> Vault --watch --chain <chain_id>
- *
- * Step 3: Proceed to poolOwner contract and call vault.acceptOwnership
+ * Step 2: Proceed to poolOwner contract and call vault.acceptOwnership
  */
 contract DeployVaultScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE/VAULT/0.97");
+        return keccak256("INFINITY-CORE/VAULT/1.0.0");
     }
 
     function run() public {

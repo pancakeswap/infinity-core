@@ -14,16 +14,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  * forge script script/03_DeployBinPoolManager.s.sol:DeployBinPoolManagerScript -vvv \
  *     --rpc-url $RPC_URL \
  *     --broadcast \
- *     --slow
- *
- * Step 2: Verify
- * forge verify-contract <address> BinPoolManager --watch --chain <chain_id> \
- *    --constructor-args `cast abi-encode "Constructor(address)" <vault_addr>`
- *
+ *     --slow \
+ *     --verify
  */
 contract DeployBinPoolManagerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE/BinPoolManager/0.97");
+        return keccak256("INFINITY-CORE/BinPoolManager/1.0.0");
     }
 
     function run() public {

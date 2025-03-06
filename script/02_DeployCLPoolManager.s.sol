@@ -14,16 +14,12 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  * forge script script/02_DeployCLPoolManager.s.sol:DeployCLPoolManagerScript -vvv \
  *     --rpc-url $RPC_URL \
  *     --broadcast \
- *     --slow
- *
- * Step 2: Verify
- * forge verify-contract <address> CLPoolManager --watch --chain <chain_id> \
- *     --constructor-args `cast abi-encode "Constructor(address)" <vault_addr>`
- *
+ *     --slow \
+ *     --verify
  */
 contract DeployCLPoolManagerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE/CLPoolManager/0.97");
+        return keccak256("INFINITY-CORE/CLPoolManager/1.0.0");
     }
 
     function run() public {
