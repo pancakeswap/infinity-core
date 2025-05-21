@@ -325,6 +325,8 @@ contract VaultTokenTest is Test {
     function test_RevertWhenTransferBalanceOverflow(address sender, address receiver, Currency currency, uint256 amount)
         public
     {
+        if (sender == receiver) return; // same address transfer will revert earlier
+
         amount = bound(amount, 1, type(uint256).max);
         uint256 overflowAmount = type(uint256).max - amount + 1;
 
@@ -359,6 +361,8 @@ contract VaultTokenTest is Test {
         Currency currency,
         uint256 amount
     ) public {
+        if (sender == receiver) return; // same address transfer will revert earlier
+
         amount = bound(amount, 1, type(uint256).max);
         uint256 overflowAmount = type(uint256).max - amount + 1;
 
