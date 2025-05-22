@@ -30,7 +30,7 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: nightly-471e4ac317858b3419faaee58ade30c0671021e0 # Nightly (2024-10-03)
+          version: stable
       
       # If FOUNDRY_PROFILE is removed, test will not revert if exceed contract size limit
       - name: Run tests

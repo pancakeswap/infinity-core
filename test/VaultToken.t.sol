@@ -113,43 +113,22 @@ contract VaultTokenTest is Test {
         assertEq(token.balanceOf(receiver, _toCurrency(1337)), 70);
     }
 
-    function testFailMintBalanceOverflow() public {
+    function test_RevertWhenMintBalanceOverflow() public {
         token.mint(address(0xDEAD), _toCurrency(1337), type(uint256).max);
+        vm.expectRevert();
         token.mint(address(0xDEAD), _toCurrency(1337), 1);
     }
 
-    function testFailTransferBalanceUnderflow() public {
+    function test_RevertWhenTransferBalanceUnderflow() public {
         address sender = address(0xABCD);
         address receiver = address(0xBEEF);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transferFrom(sender, receiver, _toCurrency(1337), 1);
     }
 
-    function testFailTransferBalanceOverflow() public {
-        address sender = address(0xABCD);
-        address receiver = address(0xBEEF);
-
-        token.mint(sender, _toCurrency(1337), type(uint256).max);
-
-        vm.prank(sender);
-        token.transferFrom(sender, receiver, _toCurrency(1337), type(uint256).max);
-
-        token.mint(sender, _toCurrency(1337), 1);
-
-        vm.prank(sender);
-        token.transferFrom(sender, receiver, _toCurrency(1337), 1);
-    }
-
-    function testFailTransferFromBalanceUnderflow() public {
-        address sender = address(0xABCD);
-        address receiver = address(0xBEEF);
-
-        vm.prank(sender);
-        token.transferFrom(sender, receiver, _toCurrency(1337), 1);
-    }
-
-    function testFailTransferFromBalanceOverflow() public {
+    function test_RevertWhenTransferBalanceOverflow() public {
         address sender = address(0xABCD);
         address receiver = address(0xBEEF);
 
@@ -160,16 +139,43 @@ contract VaultTokenTest is Test {
 
         token.mint(sender, _toCurrency(1337), 1);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transferFrom(sender, receiver, _toCurrency(1337), 1);
     }
 
-    function testFailTransferFromNotAuthorized() public {
+    function test_RevertWhenTransferFromBalanceUnderflow() public {
+        address sender = address(0xABCD);
+        address receiver = address(0xBEEF);
+
+        vm.expectRevert();
+        vm.prank(sender);
+        token.transferFrom(sender, receiver, _toCurrency(1337), 1);
+    }
+
+    function test_RevertWhenTransferFromBalanceOverflow() public {
+        address sender = address(0xABCD);
+        address receiver = address(0xBEEF);
+
+        token.mint(sender, _toCurrency(1337), type(uint256).max);
+
+        vm.prank(sender);
+        token.transferFrom(sender, receiver, _toCurrency(1337), type(uint256).max);
+
+        token.mint(sender, _toCurrency(1337), 1);
+
+        vm.expectRevert();
+        vm.prank(sender);
+        token.transferFrom(sender, receiver, _toCurrency(1337), 1);
+    }
+
+    function test_RevertWhenTransferFromNotAuthorized() public {
         address sender = address(0xABCD);
         address receiver = address(0xBEEF);
 
         token.mint(sender, _toCurrency(1337), 100);
 
+        vm.expectRevert();
         token.transferFrom(sender, receiver, _toCurrency(1337), 100);
     }
 
@@ -303,18 +309,24 @@ contract VaultTokenTest is Test {
         }
     }
 
-    function testFailTransferBalanceUnderflow(address sender, address receiver, Currency currency, uint256 amount)
-        public
-    {
+    function test_RevertWhenTransferBalanceUnderflow(
+        address sender,
+        address receiver,
+        Currency currency,
+        uint256 amount
+    ) public {
         amount = bound(amount, 1, type(uint256).max);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transfer(receiver, currency, amount);
     }
 
-    function testFailTransferBalanceOverflow(address sender, address receiver, Currency currency, uint256 amount)
+    function test_RevertWhenTransferBalanceOverflow(address sender, address receiver, Currency currency, uint256 amount)
         public
     {
+        if (sender == receiver) return; // same address transfer will revert earlier
+
         amount = bound(amount, 1, type(uint256).max);
         uint256 overflowAmount = type(uint256).max - amount + 1;
 
@@ -325,22 +337,32 @@ contract VaultTokenTest is Test {
 
         token.mint(sender, currency, overflowAmount);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transfer(receiver, currency, overflowAmount);
     }
 
-    function testFailTransferFromBalanceUnderflow(address sender, address receiver, Currency currency, uint256 amount)
-        public
-    {
+    function test_RevertWhenTransferFromBalanceUnderflow(
+        address sender,
+        address receiver,
+        Currency currency,
+        uint256 amount
+    ) public {
         amount = bound(amount, 1, type(uint256).max);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transferFrom(sender, receiver, currency, amount);
     }
 
-    function testFailTransferFromBalanceOverflow(address sender, address receiver, Currency currency, uint256 amount)
-        public
-    {
+    function test_RevertWhenTransferFromBalanceOverflow(
+        address sender,
+        address receiver,
+        Currency currency,
+        uint256 amount
+    ) public {
+        if (sender == receiver) return; // same address transfer will revert earlier
+
         amount = bound(amount, 1, type(uint256).max);
         uint256 overflowAmount = type(uint256).max - amount + 1;
 
@@ -351,18 +373,23 @@ contract VaultTokenTest is Test {
 
         token.mint(sender, currency, overflowAmount);
 
+        vm.expectRevert();
         vm.prank(sender);
         token.transferFrom(sender, receiver, currency, overflowAmount);
     }
 
-    function testFailTransferFromNotAuthorized(address sender, address receiver, Currency currency, uint256 amount)
-        public
-    {
+    function test_RevertWhenTransferFromNotAuthorized(
+        address sender,
+        address receiver,
+        Currency currency,
+        uint256 amount
+    ) public {
         amount = bound(amount, 1, type(uint256).max);
         vm.assume(sender != address(this));
 
         token.mint(sender, currency, amount);
 
+        vm.expectRevert();
         token.transferFrom(sender, receiver, currency, amount);
     }
 }
