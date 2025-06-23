@@ -35,8 +35,8 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     /// @notice the default protocol fee for dynamic fee pool,
     /// every newly created dynamic fee pool will have this default protocol fee
-    /// @dev 1000 = 0.1%, the initial setting is 0.3% i.e. 3bps
-    uint24 public defaultProtocolFeeForDynamicFeePool = 3000;
+    /// @dev 1000 = 0.1%, the initial setting is 0.03% i.e. 3bps
+    uint24 public defaultProtocolFeeForDynamicFeePool = 300;
 
     event DefaultProtocolFeeForDynamicFeePoolUpdated(
         uint24 oldDefaultProtocolFeeForDynamicFeePool, uint24 newDefaultProtocolFeeForDynamicFeePool
@@ -53,7 +53,7 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     /// @notice Set the default protocol fee for dynamic fee pool, this will only impact the newly created dynamic fee pool
     /// all those existing dynamic fee pools will not be affected, they will keep using the default protocol fee set at the time of creation
-    /// @param newDefaultProtocolFeeForDynamicFeePool 1000 = 0.1%, the initial setting is 0.3% i.e. 3bps
+    /// @param newDefaultProtocolFeeForDynamicFeePool 1000 = 0.1%, the initial setting is 0.03% i.e. 3bps
     function setDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) external onlyOwner {
         // cap the protocol fee at 0.4%, if it's over the limit we revert the tx
         if (newDefaultProtocolFeeForDynamicFeePool > ProtocolFeeLibrary.MAX_PROTOCOL_FEE) {

@@ -37,6 +37,9 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     /// @notice 100% in hundredths of a bip
     uint256 private constant ONE_HUNDRED_PERCENT_RATIO = 1e6;
 
+    /// @dev the initial setting of the default protocol fee for dynamic fee pool is 0.03% i.e. 3bps
+    uint24 private constant DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL = 300;
+
     Vault vault;
     CLPoolManager clPoolManager;
     BinPoolManager binPoolManager;
@@ -98,8 +101,8 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     function testSetDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) public {
         ProtocolFeeController controller = new ProtocolFeeController(address(clPoolManager));
 
-        // it should start with 0.3% as default
-        assertEq(controller.defaultProtocolFeeForDynamicFeePool(), 3000);
+        // it should start with 0.03% as default
+        assertEq(controller.defaultProtocolFeeForDynamicFeePool(), DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL);
 
         {
             // must from owner
@@ -114,7 +117,7 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         } else {
             vm.expectEmit(true, true, true, true);
             emit ProtocolFeeController.DefaultProtocolFeeForDynamicFeePoolUpdated(
-                3000, newDefaultProtocolFeeForDynamicFeePool
+                DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL, newDefaultProtocolFeeForDynamicFeePool
             );
             controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
             assertEq(controller.defaultProtocolFeeForDynamicFeePool(), newDefaultProtocolFeeForDynamicFeePool);
@@ -417,7 +420,7 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         uint16 protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
         uint16 protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
         assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
-        assertEq(protocolFeeOneForZero, 3000);
+        assertEq(protocolFeeOneForZero, DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL);
 
         controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
 
@@ -466,7 +469,7 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         uint16 protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
         uint16 protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
         assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
-        assertEq(protocolFeeOneForZero, 3000);
+        assertEq(protocolFeeOneForZero, DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL);
 
         controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
 
