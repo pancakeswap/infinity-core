@@ -27,6 +27,7 @@ import {BalanceDelta} from "../src/types/BalanceDelta.sol";
 import {BinTestHelper} from "./pool-bin/helpers/BinTestHelper.sol";
 import {BinSwapHelper} from "./pool-bin/helpers/BinSwapHelper.sol";
 import {BinLiquidityHelper} from "./pool-bin/helpers/BinLiquidityHelper.sol";
+import {HooksContract} from "./libraries/Hooks/HooksContract.sol";
 
 contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     using CLPoolParametersHelper for bytes32;
@@ -43,6 +44,8 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     BinSwapHelper public binSwapHelper;
     BinLiquidityHelper public binLiquidityHelper;
 
+    HooksContract public hooksContract;
+
     function setUp() public {
         initializeTokens();
 
@@ -58,6 +61,8 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         IERC20(Currency.unwrap(currency1)).approve(address(binSwapHelper), 1000 ether);
         IERC20(Currency.unwrap(currency0)).approve(address(binLiquidityHelper), 1000 ether);
         IERC20(Currency.unwrap(currency1)).approve(address(binLiquidityHelper), 1000 ether);
+
+        hooksContract = new HooksContract(0);
     }
 
     function testOwnerTransfer() public {
@@ -88,6 +93,32 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         vm.prank(makeAddr("newOwner"));
         controller.acceptOwnership();
         assertEq(controller.owner(), makeAddr("newOwner"));
+    }
+
+    function testSetDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) public {
+        ProtocolFeeController controller = new ProtocolFeeController(address(clPoolManager));
+
+        // it should start with 0.3% as default
+        assertEq(controller.defaultProtocolFeeForDynamicFeePool(), 3000);
+
+        {
+            // must from owner
+            vm.prank(makeAddr("someone"));
+            vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, makeAddr("someone")));
+            controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
+        }
+
+        if (newDefaultProtocolFeeForDynamicFeePool > ProtocolFeeLibrary.MAX_PROTOCOL_FEE) {
+            vm.expectRevert(ProtocolFeeController.InvalidDefaultProtocolFeeForDynamicFeePool.selector);
+            controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
+        } else {
+            vm.expectEmit(true, true, true, true);
+            emit ProtocolFeeController.DefaultProtocolFeeForDynamicFeePoolUpdated(
+                3000, newDefaultProtocolFeeForDynamicFeePool
+            );
+            controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
+            assertEq(controller.defaultProtocolFeeForDynamicFeePool(), newDefaultProtocolFeeForDynamicFeePool);
+        }
     }
 
     function testSetProcotolFeeSplitRatio(uint256 newProtocolFeeSplitRatio) public {
@@ -360,6 +391,104 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
                 // keeping the error within 0.01% (can't avoid due to precision loss)
                 100
             );
+        }
+    }
+
+    function testCLDynamicPoolInitWithProtolFeeControllerFuzz(uint24 newDefaultProtocolFeeForDynamicFeePool) public {
+        ProtocolFeeController controller = new ProtocolFeeController(address(clPoolManager));
+        newDefaultProtocolFeeForDynamicFeePool =
+            uint24(bound(newDefaultProtocolFeeForDynamicFeePool, 0, ProtocolFeeLibrary.MAX_PROTOCOL_FEE));
+
+        clPoolManager.setProtocolFeeController(controller);
+
+        PoolKey memory key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: hooksContract,
+            poolManager: clPoolManager,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            parameters: bytes32(0).setTickSpacing(10)
+        });
+        clPoolManager.initialize(key, Constants.SQRT_RATIO_1_1);
+
+        (,, uint24 actualProtocolFee,) = clPoolManager.getSlot0(key.toId());
+
+        // under default rule protocol fee must be equal for both directions
+        uint16 protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+        uint16 protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+        assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
+        assertEq(protocolFeeOneForZero, 3000);
+
+        controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
+
+        key.parameters = bytes32(0).setTickSpacing(30);
+        clPoolManager.initialize(key, Constants.SQRT_RATIO_1_1);
+
+        (,, actualProtocolFee,) = clPoolManager.getSlot0(key.toId());
+        // under default rule protocol fee must be equal for both directions
+        protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+        protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+        assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
+        assertEq(protocolFeeOneForZero, newDefaultProtocolFeeForDynamicFeePool);
+
+        // verify the original pool is not affected
+        {
+            key.parameters = bytes32(0).setTickSpacing(10);
+
+            (,, actualProtocolFee,) = clPoolManager.getSlot0(key.toId());
+            // under default rule protocol fee must be equal for both directions
+            protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+            protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+            assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
+        }
+    }
+
+    function testBinDynamicPoolInitWithProtolFeeControllerFuzz(uint24 newDefaultProtocolFeeForDynamicFeePool) public {
+        ProtocolFeeController controller = new ProtocolFeeController(address(binPoolManager));
+        newDefaultProtocolFeeForDynamicFeePool =
+            uint24(bound(newDefaultProtocolFeeForDynamicFeePool, 0, ProtocolFeeLibrary.MAX_PROTOCOL_FEE));
+
+        binPoolManager.setProtocolFeeController(controller);
+
+        PoolKey memory key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: hooksContract,
+            poolManager: binPoolManager,
+            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
+            parameters: bytes32(0).setBinStep(1)
+        });
+        binPoolManager.initialize(key, ID_ONE);
+
+        (, uint24 actualProtocolFee,) = binPoolManager.getSlot0(key.toId());
+
+        // under default rule protocol fee must be equal for both directions
+        uint16 protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+        uint16 protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+        assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
+        assertEq(protocolFeeOneForZero, 3000);
+
+        controller.setDefaultProtocolFeeForDynamicFeePool(newDefaultProtocolFeeForDynamicFeePool);
+
+        key.parameters = bytes32(0).setBinStep(5);
+        binPoolManager.initialize(key, ID_ONE);
+
+        (, actualProtocolFee,) = binPoolManager.getSlot0(key.toId());
+        // under default rule protocol fee must be equal for both directions
+        protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+        protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+        assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
+        assertEq(protocolFeeOneForZero, newDefaultProtocolFeeForDynamicFeePool);
+
+        // verify the original pool is not affected
+        {
+            key.parameters = bytes32(0).setBinStep(1);
+
+            (, actualProtocolFee,) = binPoolManager.getSlot0(key.toId());
+            // under default rule protocol fee must be equal for both directions
+            protocolFeeZeroForOne = actualProtocolFee.getZeroForOneFee();
+            protocolFeeOneForZero = actualProtocolFee.getOneForZeroFee();
+            assertEq(protocolFeeOneForZero, protocolFeeZeroForOne);
         }
     }
 
