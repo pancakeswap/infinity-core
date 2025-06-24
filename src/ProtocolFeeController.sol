@@ -18,6 +18,9 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
     /// @notice throw when the pool manager saved does not match the pool manager from the pool key
     error InvalidPoolManager();
 
+    /// @notice throw when the default protocol fee for dynamic fee pool is invalid i.e. greater than 0.4%
+    error InvalidDefaultProtocolFeeForDynamicFeePool();
+
     /// @notice throw when the protocol fee split ratio is invalid i.e. greater than 100%
     error InvalidProtocolFeeSplitRatio();
 
@@ -30,6 +33,15 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     address public immutable poolManager;
 
+    /// @notice the default protocol fee for dynamic fee pool,
+    /// every newly created dynamic fee pool will have this default protocol fee
+    /// @dev 1000 = 0.1%, the initial setting is 0.03% i.e. 3bps
+    uint24 public defaultProtocolFeeForDynamicFeePool = 300;
+
+    event DefaultProtocolFeeForDynamicFeePoolUpdated(
+        uint24 oldDefaultProtocolFeeForDynamicFeePool, uint24 newDefaultProtocolFeeForDynamicFeePool
+    );
+
     event ProtocolFeeSplitRatioUpdated(uint256 oldProtocolFeeSplitRatio, uint256 newProtocolFeeSplitRatio);
 
     /// @notice emit when the protocol fee is collected
@@ -37,6 +49,23 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     constructor(address _poolManager) Ownable(msg.sender) {
         poolManager = _poolManager;
+    }
+
+    /// @notice Set the default protocol fee for dynamic fee pool, this will only impact the newly created dynamic fee pool
+    /// all those existing dynamic fee pools will not be affected, they will keep using the default protocol fee set at the time of creation
+    /// @param newDefaultProtocolFeeForDynamicFeePool 1000 = 0.1%, the initial setting is 0.03% i.e. 3bps
+    function setDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) external onlyOwner {
+        // cap the protocol fee at 0.4%, if it's over the limit we revert the tx
+        if (newDefaultProtocolFeeForDynamicFeePool > ProtocolFeeLibrary.MAX_PROTOCOL_FEE) {
+            revert InvalidDefaultProtocolFeeForDynamicFeePool();
+        }
+
+        uint24 oldDefaultProtocolFeeForDynamicFeePool = defaultProtocolFeeForDynamicFeePool;
+        defaultProtocolFeeForDynamicFeePool = newDefaultProtocolFeeForDynamicFeePool;
+
+        emit DefaultProtocolFeeForDynamicFeePoolUpdated(
+            oldDefaultProtocolFeeForDynamicFeePool, newDefaultProtocolFeeForDynamicFeePool
+        );
     }
 
     /// @notice Set the ratio of the protocol fee in the total fee
@@ -77,8 +106,8 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
         // calculate the protocol fee based on the predefined rule
         uint256 lpFee = poolKey.fee;
         if (lpFee == LPFeeLibrary.DYNAMIC_FEE_FLAG) {
-            /// @notice for dynamic fee pools, the default protocol fee is 0
-            return _buildProtocolFee(0);
+            /// @notice for dynamic fee pools, the default protocol fee is set separately
+            return _buildProtocolFee(defaultProtocolFeeForDynamicFeePool);
         } else if (protocolFeeSplitRatio == 0) {
             return _buildProtocolFee(0);
         } else if (protocolFeeSplitRatio == ONE_HUNDRED_PERCENT_RATIO) {
