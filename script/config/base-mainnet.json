@@ -5,8 +5,8 @@
     "clPoolManager": "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b",
     "binPoolManager": "0xC697d2898e0D09264376196696c51D7aBbbAA4a9",
     "protocolFeeControllerOwner": "0x42571B8414c68B63A2729146CE93F23639d25399",
-    "clProtocolFeeController": "0x12F2a2965A665F8aBCf955C4dA26CC4Ec437b2c8",
-    "binProtocolFeeController": "0xC7C41cc1F0f4BC4CA96ac860E5c724B9A265B9A8",
+    "clProtocolFeeController": "0x15F6180033aEa66377d2A1778e418591C00dEb4c",
+    "binProtocolFeeController": "0xDBA4cFFF63d94F95A6e5DE9Cc49F0A13Af25214d",
     "clPoolManagerOwnerContract": "0x13f818BDC906C16764d8325809B4b67A9981f792",
     "binPoolManagerOwnerContract": "0x10944942c7EC351A4Aa36D59A40Cb741cc5c37cB"
 }
