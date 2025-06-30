@@ -16,11 +16,20 @@ import {IProtocolFees} from "../src/interfaces/IProtocolFees.sol";
  *     --slow \
  *     --verify
  *
- * Step 2: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
+ * Step 2: Update config file
+ *
+ * Step 3: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
+ *
+ * Step 4: Call setProtocolFeeController() for the clPoolManager (if first time deploy)
+ * forge script script/04_DeployCLProtocolFeeController.s.sol:DeployCLProtocolFeeControllerScript -vvv \
+ *     --sig "setProtocolFeeController()" \
+ *     --rpc-url $RPC_URL \
+ *     --broadcast \
+ *     --slow
  */
 contract DeployCLProtocolFeeControllerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE/CLProtocolFeeController/1.0.0");
+        return keccak256("INFINITY-CORE/CLProtocolFeeController/1.1.0");
     }
 
     function run() public {
@@ -46,6 +55,19 @@ contract DeployCLProtocolFeeControllerScript is BaseScript {
         );
 
         console.log("CLProtocolFeeController contract deployed at ", clProtocolFeeController);
+
+        vm.stopBroadcast();
+    }
+
+    function setProtocolFeeController() public {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(deployerPrivateKey);
+
+        address clPoolManager = getAddressFromConfig("clPoolManager");
+        console.log("clPoolManager address: ", address(clPoolManager));
+
+        address clProtocolFeeController = getAddressFromConfig("clProtocolFeeController");
+        console.log("clProtocolFeeController address: ", address(clProtocolFeeController));
 
         /// @notice set the protocol fee controller for the clPoolManager
         IProtocolFees(clPoolManager).setProtocolFeeController(ProtocolFeeController(clProtocolFeeController));

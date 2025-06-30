@@ -16,11 +16,20 @@ import {IProtocolFees} from "../src/interfaces/IProtocolFees.sol";
  *     --slow \
  *     --verify
  *
- * Step 2: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
+ * Step 2: Update config file
+ *
+ * Step 3: Proceed to poolOwner contract and call protocolFeeController.acceptOwnership
+ *
+ * Step 4: Call setProtocolFeeController() for the binPoolManager (if first time deploy)
+ * forge script script/05_DeployBinProtocolFeeController.s.sol:DeployBinProtocolFeeControllerScript -vvv \
+ *     --sig "setProtocolFeeController()" \
+ *     --rpc-url $RPC_URL \
+ *     --broadcast \
+ *     --slow
  */
 contract DeployBinProtocolFeeControllerScript is BaseScript {
     function getDeploymentSalt() public pure override returns (bytes32) {
-        return keccak256("INFINITY-CORE-CORE/BinProtocolFeeController/1.0.0");
+        return keccak256("INFINITY-CORE-CORE/BinProtocolFeeController/1.1.0");
     }
 
     function run() public {
@@ -47,7 +56,20 @@ contract DeployBinProtocolFeeControllerScript is BaseScript {
 
         console.log("BinProtocolFeeController contract deployed at ", binProtocolFeeController);
 
-        /// @notice set the protocol fee controller for the clPoolManager
+        vm.stopBroadcast();
+    }
+
+    function setProtocolFeeController() public {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        vm.startBroadcast(deployerPrivateKey);
+
+        address binPoolManager = getAddressFromConfig("binPoolManager");
+        console.log("binPoolManager address: ", address(binPoolManager));
+
+        address binProtocolFeeController = getAddressFromConfig("binProtocolFeeController");
+        console.log("binProtocolFeeController address: ", address(binProtocolFeeController));
+
+        /// @notice set the protocol fee controller for the binPoolManager
         IProtocolFees(binPoolManager).setProtocolFeeController(ProtocolFeeController(binProtocolFeeController));
 
         vm.stopBroadcast();
