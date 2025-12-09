@@ -45,6 +45,7 @@ contract CLPoolManagerOwner is IPoolManagerOwner, PoolManagerOwnable2Step, Pausa
 
     /// @inheritdoc IPoolManagerOwner
     function transferPoolManagerOwnership(address newPoolManagerOwner) external override onlyOwner {
+        if (newPoolManagerOwner == address(0)) revert();
         _setPendingPoolManagerOwner(newPoolManagerOwner);
         emit PoolManagerOwnershipTransferStarted(address(this), newPoolManagerOwner);
     }
