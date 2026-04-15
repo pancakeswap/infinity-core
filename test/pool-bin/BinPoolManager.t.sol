@@ -39,6 +39,7 @@ import {PriceHelper} from "../../src/pool-bin/libraries/PriceHelper.sol";
 import {BinHelper} from "../../src/pool-bin/libraries/BinHelper.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Uint128x128Math} from "../../src/pool-bin/libraries/math/Uint128x128Math.sol";
 
 contract BinPoolManagerTest is Test, BinTestHelper {
     using SafeCast for uint256;
@@ -303,6 +304,87 @@ contract BinPoolManagerTest is Test, BinTestHelper {
     function testInitializeInvalidId() public {
         vm.expectRevert();
         poolManager.initialize(key, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // activeId = 0 analysis: implicit defense in BinPoolManager.initialize
+    // See: docs/activeId-price-relationship.md §9
+    // -----------------------------------------------------------------------
+
+    /// @notice When activeId=0, pow() inside getPriceFromId reverts because the
+    ///         absolute value of the exponent (8,388,608) exceeds the 2^20 limit,
+    ///         throwing Uint128x128Math__PowUnderflow rather than an explicit
+    ///         input-validation error. The guard is a math side-effect, not an
+    ///         intentional parameter check.
+    function test_InitializeActiveIdZero_RevertsWithPowUnderflow() public {
+        // base = 1 + binStep/10000 expressed as a 128.128 fixed-point number
+        // binStep = 10 (set in setUp via poolParam.setBinStep(10))
+        uint256 base = Constants.SCALE + (uint256(10) << Constants.SCALE_OFFSET) / Constants.BASIS_POINT_MAX;
+        // exponent = 0 - REAL_ID_SHIFT = -8,388,608
+        int256 exponent = -int256(uint256(1 << 23));
+
+        vm.expectRevert(abi.encodeWithSelector(Uint128x128Math.Uint128x128Math__PowUnderflow.selector, base, exponent));
+        poolManager.initialize(key, 0);
+    }
+
+    /// @notice After initialize(key, 0) reverts, the pool slot0 remains all-zero
+    ///         (never written). getSlot0 returning activeId=0 means "never initialized",
+    ///         not "initialized with id 0". These two states are indistinguishable
+    ///         on-chain, which is the root design flaw.
+    function test_InitializeActiveIdZero_PoolStateUnchanged() public {
+        // Attempt to initialize with activeId=0; expect revert
+        vm.expectRevert();
+        poolManager.initialize(key, 0);
+
+        // Pool was never written: slot0 is still all-zero
+        (uint24 storedActiveId,,) = poolManager.getSlot0(key.toId());
+        assertEq(storedActiveId, 0, "pool should remain uninitialized (slot0 = 0)");
+
+        // A valid activeId on the same key initializes successfully
+        uint24 validId = 2 ** 23; // price == 1
+        poolManager.initialize(key, validId);
+        (storedActiveId,,) = poolManager.getSlot0(key.toId());
+        assertEq(storedActiveId, validId, "pool should be initialized with valid activeId");
+    }
+
+    /// @notice The usable activeId range is bounded by fixed-point precision of
+    ///         base^exponent, not merely by the |exponent| < 2^20 gate in pow().
+    ///         For binStep=10 (base≈1.001), pow() underflows to zero at |exponent|≈88,767.
+    ///         activeId=0 has exponent=-8,388,608, roughly 94x beyond that practical limit.
+    function test_InitializeActiveIdZero_BoundaryComparison() public {
+        uint24 REAL_ID_SHIFT = uint24(1 << 23); // 8,388,608 — the price-equals-1 anchor
+
+        // --- Practical minimum valid activeId for binStep=10 (offset -88,767) ---
+        // Confirmed by test_fuzz_ValidPrice; asserted here for explicitness
+        uint24 practicalMinValid = REAL_ID_SHIFT - 88_767; // 8,299,841
+        poolManager.initialize(key, practicalMinValid);
+        (uint24 storedId,,) = poolManager.getSlot0(key.toId());
+        assertEq(storedId, practicalMinValid, "practicalMinValid should initialize successfully");
+
+        // --- One step beyond the practical boundary: pow precision underflow, revert ---
+        PoolKey memory key2 = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: IHooks(address(0)),
+            poolManager: IPoolManager(address(poolManager)),
+            fee: uint24(500),
+            parameters: poolParam.setBinStep(10)
+        });
+        uint24 practicalMinInvalid = REAL_ID_SHIFT - 88_768; // 8,299,840
+        vm.expectRevert();
+        poolManager.initialize(key2, practicalMinInvalid);
+
+        // --- activeId=0: exponent=-8,388,608, ~94x beyond the practical limit, revert ---
+        PoolKey memory key3 = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: IHooks(address(0)),
+            poolManager: IPoolManager(address(poolManager)),
+            fee: uint24(100),
+            parameters: poolParam.setBinStep(10)
+        });
+        vm.expectRevert();
+        poolManager.initialize(key3, 0);
     }
 
     function testInitializeSwapFeeTooLarge() public {
