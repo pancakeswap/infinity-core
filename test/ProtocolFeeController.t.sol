@@ -37,8 +37,8 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     /// @notice 100% in hundredths of a bip
     uint256 private constant ONE_HUNDRED_PERCENT_RATIO = 1e6;
 
-    /// @dev the initial setting of the default protocol fee for dynamic fee pool is 0.03% i.e. 3bps
-    uint24 private constant DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL = 300;
+    /// @dev the initial setting of the default protocol fee for dynamic fee pool is 0%
+    uint24 private constant DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL = 0;
 
     Vault vault;
     CLPoolManager clPoolManager;
@@ -101,7 +101,7 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     function testSetDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) public {
         ProtocolFeeController controller = new ProtocolFeeController(address(clPoolManager));
 
-        // it should start with 0.03% as default
+        // it should start with 0% as default
         assertEq(controller.defaultProtocolFeeForDynamicFeePool(), DEFAULT_PROTOCOL_FEE_FOR_DYNAMIC_FEE_POOL);
 
         {
