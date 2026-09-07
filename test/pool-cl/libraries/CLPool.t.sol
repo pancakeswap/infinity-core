@@ -144,39 +144,28 @@ contract PoolTest is Test {
             return;
         }
 
-        uint24 swapFee = swapParams.lpFeeOverride.isOverride()
+        uint24 lpSwapFee = swapParams.lpFeeOverride.isOverride()
             ? swapParams.lpFeeOverride.removeOverrideAndValidate(LPFeeLibrary.ONE_HUNDRED_PERCENT_FEE)
             : lpFee;
+        /// @dev the fee charged on the swap is the combination of the protocol fee and the lp fee
+        uint16 swapProtocolFee = swapParams.zeroForOne ? protocolFee.getZeroForOneFee() : protocolFee.getOneForZeroFee();
+        uint24 swapFee =
+            swapProtocolFee == 0 ? lpSwapFee : ProtocolFeeLibrary.calculateSwapFee(swapProtocolFee, lpSwapFee);
 
-        if (swapParams.zeroForOne) {
-            if (swapParams.sqrtPriceLimitX96 >= slot0.sqrtPriceX96()) {
-                vm.expectRevert(
-                    abi.encodeWithSelector(
-                        CLPool.InvalidSqrtPriceLimit.selector, slot0.sqrtPriceX96(), swapParams.sqrtPriceLimitX96
-                    )
-                );
-            } else if (swapParams.sqrtPriceLimitX96 <= TickMath.MIN_SQRT_RATIO) {
-                vm.expectRevert(
-                    abi.encodeWithSelector(
-                        CLPool.InvalidSqrtPriceLimit.selector, slot0.sqrtPriceX96(), swapParams.sqrtPriceLimitX96
-                    )
-                );
-            }
-        } else if (!swapParams.zeroForOne) {
-            if (swapParams.sqrtPriceLimitX96 <= slot0.sqrtPriceX96()) {
-                vm.expectRevert(
-                    abi.encodeWithSelector(
-                        CLPool.InvalidSqrtPriceLimit.selector, slot0.sqrtPriceX96(), swapParams.sqrtPriceLimitX96
-                    )
-                );
-            } else if (swapParams.sqrtPriceLimitX96 >= TickMath.MAX_SQRT_RATIO) {
-                vm.expectRevert(
-                    abi.encodeWithSelector(
-                        CLPool.InvalidSqrtPriceLimit.selector, slot0.sqrtPriceX96(), swapParams.sqrtPriceLimitX96
-                    )
-                );
-            }
-        } else if (swapParams.amountSpecified <= 0 && swapFee == LPFeeLibrary.ONE_HUNDRED_PERCENT_FEE) {
+        bool invalidSqrtPriceLimit = swapParams.zeroForOne
+            ? (swapParams.sqrtPriceLimitX96 >= slot0.sqrtPriceX96()
+                    || swapParams.sqrtPriceLimitX96 <= TickMath.MIN_SQRT_RATIO)
+            : (swapParams.sqrtPriceLimitX96 <= slot0.sqrtPriceX96()
+                    || swapParams.sqrtPriceLimitX96 >= TickMath.MAX_SQRT_RATIO);
+
+        if (invalidSqrtPriceLimit) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    CLPool.InvalidSqrtPriceLimit.selector, slot0.sqrtPriceX96(), swapParams.sqrtPriceLimitX96
+                )
+            );
+        } else if (swapFee >= LPFeeLibrary.ONE_HUNDRED_PERCENT_FEE && swapParams.amountSpecified >= 0) {
+            /// @dev a swap fee totaling 100% makes exact output swaps impossible
             vm.expectRevert(CLPool.InvalidFeeForExactOut.selector);
         }
 
