@@ -1,0 +1,45 @@
+# Add these permissions at the workflow or job level to enable AWS OIDC login
+permissions:
+  id-token: write
+    contents: read
+
+    jobs:
+      # Assuming your 'lint' job runs first...
+        lint:
+            runs-on: ubuntu-latest
+                steps:
+                      - name: Checkout Code
+                              uses: actions/checkout@v4
+
+                                    - name: Run Linter
+                                            run: |
+                                                      echo "Running your linters here..."
+                                                                # Your linting commands
+
+                                                                  # Appending the build and push steps as a separate job that depends on successful linting
+                                                                    build-and-push:
+                                                                        needs: lint
+                                                                            runs-on: ubuntu-latest
+                                                                                steps:
+                                                                                      - name: Checkout Code
+                                                                                              uses: actions/checkout@v4
+
+                                                                                                    - name: Configure AWS Credentials
+                                                                                                            uses: aws-actions/configure-aws-credentials@v4
+                                                                                                                    with:
+                                                                                                                              role-to-assume: arn:aws:iam::123456789012:role/github-actions-ecr-role # Change to your IAM Role ARN
+                                                                                                                                        aws-region: us-east-1 # Change to your ECR region
+
+                                                                                                                                              - name: Log in to Amazon ECR
+                                                                                                                                                      id: login-ecr
+                                                                                                                                                              uses: aws-actions/amazon-ecr-login@v2
+
+                                                                                                                                                                    - name: Build, Tag, and Push Image to Amazon ECR
+                                                                                                                                                                            env:
+                                                                                                                                                                                      ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+                                                                                                                                                                                                ECR_REPOSITORY: my-ecr-repo-name # Change to your ECR repository name
+                                                                                                                                                                                                          IMAGE_TAG: ${{ github.sha }}
+                                                                                                                                                                                                                  run: |
+                                                                                                                                                                                                                            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+                                                                                                                                                                                                                                      docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+                                                                                                                                                                                                                                      
