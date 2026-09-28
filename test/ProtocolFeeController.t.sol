@@ -28,6 +28,8 @@ import {BinTestHelper} from "./pool-bin/helpers/BinTestHelper.sol";
 import {BinSwapHelper} from "./pool-bin/helpers/BinSwapHelper.sol";
 import {BinLiquidityHelper} from "./pool-bin/helpers/BinLiquidityHelper.sol";
 import {HooksContract} from "./libraries/Hooks/HooksContract.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     using CLPoolParametersHelper for bytes32;
@@ -526,8 +528,13 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         key.poolManager = clPoolManager;
         if (!newProtocolFee.validate()) {
             vm.expectRevert(abi.encodeWithSelector(IProtocolFees.ProtocolFeeTooLarge.selector, newProtocolFee));
+            controller.setProtocolFeeWhitelist(newProtocolFee, true);
+            vm.expectRevert(
+                abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, newProtocolFee)
+            );
             controller.setProtocolFee(key, newProtocolFee);
         } else {
+            controller.setProtocolFeeWhitelist(newProtocolFee, true);
             controller.setProtocolFee(key, newProtocolFee);
 
             (,, uint24 actualProtocolFee,) = clPoolManager.getSlot0(key.toId());
@@ -740,6 +747,543 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         controller.collectProtocolFee(makeAddr("recipient"), currency0, 0);
         assertEq(binPoolManager.protocolFeesAccrued(currency0), 0);
         assertEq(IERC20(Currency.unwrap(currency0)).balanceOf(makeAddr("recipient")), protocolFeeAmount);
+    }
+
+    function testOperationalRolesCannotCollectFees(bool bin, bool batch, bool setter) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued = manager.protocolFeesAccrued(currency0);
+        assertGt(accrued, 0);
+        address operator = makeAddr("operator");
+        controller.grantRole(setter ? controller.FEE_SETTER_ROLE() : controller.FEE_WHITELIST_ROLE(), operator);
+        address[] memory recipients = new address[](1);
+        recipients[0] = makeAddr("recipient");
+        Currency[] memory currencies = new Currency[](1);
+        currencies[0] = currency0;
+        uint256[] memory amounts = new uint256[](1);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        if (batch) controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        else controller.collectProtocolFee(recipients[0], currency0, 0);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued);
+        assertEq(currency0.balanceOf(recipients[0]), 0);
+
+        if (batch) controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        else controller.collectProtocolFee(recipients[0], currency0, 0);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+        assertEq(currency0.balanceOf(recipients[0]), accrued);
+    }
+
+    function testWhitelistRoleCannotSetPoolFees(bool bin, bool batch) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](1);
+        keys[0] = _initializeFeePool(bin, 2000);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+        uint24[] memory fees = new uint24[](1);
+        controller.setProtocolFeeWhitelist(0, true);
+        address operator = makeAddr("operator");
+        controller.grantRole(controller.FEE_WHITELIST_ROLE(), operator);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        if (batch) controller.batchSetProtocolFee(keys, fees);
+        else controller.setProtocolFee(keys[0], 0);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+    }
+
+    function testSetProtocolFeeRejectsUnwhitelisted(bool bin, bool setter) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        uint24 originalFee = _storedProtocolFee(key);
+        address caller = setter ? makeAddr("setter") : address(this);
+        if (setter) controller.grantRole(controller.FEE_SETTER_ROLE(), caller);
+        vm.prank(caller);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, uint24(100)));
+        controller.setProtocolFee(key, 100);
+        assertEq(_storedProtocolFee(key), originalFee);
+    }
+
+    function testEnumerableWhitelistRole() public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 role = controller.FEE_WHITELIST_ROLE();
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        address operator = makeAddr("operator");
+        assertTrue(controller.supportsInterface(type(IAccessControlEnumerable).interfaceId));
+        assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(this)));
+        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 1);
+
+        vm.prank(operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, operator, adminRole)
+        );
+        controller.grantRole(role, operator);
+
+        controller.grantRole(role, operator);
+        controller.grantRole(role, operator);
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), operator);
+
+        vm.prank(operator);
+        controller.setProtocolFeeWhitelist(0, true);
+        assertTrue(controller.protocolFeeWhitelist(0));
+        vm.prank(operator);
+        controller.setProtocolFeeWhitelist(0, false);
+        assertFalse(controller.protocolFeeWhitelist(0));
+
+        controller.revokeRole(role, operator);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        controller.setProtocolFeeWhitelist(0, true);
+
+        controller.grantRole(role, operator);
+        vm.prank(operator);
+        controller.renounceRole(role, operator);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        controller.setProtocolFeeWhitelist(0, true);
+    }
+
+    function testEnumerableSetterRole(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        controller.setProtocolFeeWhitelist(0, true);
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        address setter = makeAddr("setter");
+        controller.grantRole(role, setter);
+        controller.grantRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), setter);
+        assertFalse(controller.hasRole(controller.FEE_WHITELIST_ROLE(), setter));
+        vm.prank(setter);
+        controller.setProtocolFee(key, 0);
+        assertEq(_storedProtocolFee(key), 0);
+
+        controller.revokeRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(setter);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, setter));
+        controller.setProtocolFee(key, 0);
+
+        controller.grantRole(role, setter);
+        vm.prank(setter);
+        controller.renounceRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(setter);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, setter));
+        controller.setProtocolFee(key, 0);
+    }
+
+    function testSetterCannotChangeWhitelist() public {
+        ProtocolFeeController controller = _deployController(false);
+        address setter = makeAddr("setter");
+        controller.grantRole(controller.FEE_SETTER_ROLE(), setter);
+        controller.setProtocolFeeWhitelist(100, true);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, setter);
+        vm.startPrank(setter);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeWhitelist(0, true);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeWhitelist(100, false);
+        vm.stopPrank();
+        assertFalse(controller.protocolFeeWhitelist(0));
+        assertTrue(controller.protocolFeeWhitelist(100));
+    }
+
+    function testDefaultAdminRoleIsManagedThroughOwnership() public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 role = controller.DEFAULT_ADMIN_ROLE();
+        vm.expectRevert(ProtocolFeeController.DefaultAdminRoleManagedByOwnership.selector);
+        controller.grantRole(role, makeAddr("anotherAdmin"));
+        vm.expectRevert(ProtocolFeeController.DefaultAdminRoleManagedByOwnership.selector);
+        controller.revokeRole(role, address(this));
+        vm.expectRevert(ProtocolFeeController.DefaultAdminRoleManagedByOwnership.selector);
+        controller.renounceRole(role, address(this));
+        controller.grantRole(role, address(this));
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), controller.owner());
+    }
+
+    function testOwnershipTransferToSelfPreservesAdmin() public {
+        ProtocolFeeController controller = _deployController(false);
+        controller.transferOwnership(address(this));
+        controller.acceptOwnership();
+        assertEq(controller.owner(), address(this));
+        assertEq(controller.pendingOwner(), address(0));
+        bytes32 role = controller.DEFAULT_ADMIN_ROLE();
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), address(this));
+    }
+
+    function testOwnershipTransferMovesRoleAdministration() public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        bytes32 role = controller.FEE_WHITELIST_ROLE();
+        address newOwner = makeAddr("newOwner");
+        controller.setProtocolFeeWhitelist(0, true);
+        controller.transferOwnership(newOwner);
+        assertTrue(controller.hasRole(adminRole, address(this)));
+        assertFalse(controller.hasRole(adminRole, newOwner));
+
+        vm.prank(newOwner);
+        controller.acceptOwnership();
+        assertFalse(controller.hasRole(adminRole, address(this)));
+        assertEq(controller.getRoleMemberCount(adminRole), 1);
+        assertEq(controller.getRoleMember(adminRole, 0), newOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(this), adminRole)
+        );
+        controller.grantRole(role, address(this));
+
+        vm.prank(newOwner);
+        controller.grantRole(role, makeAddr("operator"));
+        PoolKey memory key = _initializeFeePool(false, 2000);
+        vm.prank(newOwner);
+        controller.setProtocolFee(key, 0);
+        assertEq(_storedProtocolFee(key), 0);
+
+        vm.prank(newOwner);
+        controller.renounceOwnership();
+        assertEq(controller.getRoleMemberCount(adminRole), 0);
+        assertFalse(controller.hasRole(adminRole, address(0)));
+    }
+
+    function testOperationalRolesCannotChangeDefaultsOrRoles(bool setter) public {
+        ProtocolFeeController controller = _deployController(false);
+        address operator = makeAddr("operator");
+        bytes32 role = setter ? controller.FEE_SETTER_ROLE() : controller.FEE_WHITELIST_ROLE();
+        controller.grantRole(role, operator);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator);
+
+        vm.startPrank(operator);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeSplitRatio(0);
+        vm.expectRevert(unauthorized);
+        controller.setDefaultProtocolFeeForDynamicFeePool(0);
+        vm.expectRevert(unauthorized);
+        controller.transferOwnership(operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, controller.DEFAULT_ADMIN_ROLE()
+            )
+        );
+        controller.grantRole(role, makeAddr("anotherOperator"));
+        vm.stopPrank();
+    }
+
+    function testWhitelistDoesNotChangeInitialization(bool bin, bool dynamicFee) public {
+        ProtocolFeeController controller = _deployController(bin);
+        uint24 fee = dynamicFee ? LPFeeLibrary.DYNAMIC_FEE_FLAG : 2000;
+        PoolKey memory key = _feePoolKey(bin, fee);
+        uint24 defaultFee = controller.protocolFeeForPool(key);
+        assertGt(defaultFee, 0);
+        assertFalse(controller.protocolFeeWhitelist(defaultFee));
+        controller.setProtocolFeeWhitelist(0, true);
+        _initializeFeePool(bin, fee);
+        assertEq(_storedProtocolFee(key), defaultFee);
+        assertEq(controller.protocolFeeForPool(key), defaultFee);
+    }
+
+    function testWhitelistFeeLifecycle(bool bin, bool asOperator, uint16 fee0, uint16 fee1) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        uint24 originalFee = _storedProtocolFee(key);
+        uint24 fee = uint24(bound(fee0, 0, 4000)) | (uint24(bound(fee1, 0, 4000)) << 12);
+        address caller = asOperator ? makeAddr("operator") : address(this);
+        if (asOperator) controller.grantRole(controller.FEE_WHITELIST_ROLE(), caller);
+        assertFalse(controller.protocolFeeWhitelist(fee));
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeWhitelistUpdated(fee, true);
+        vm.prank(caller);
+        controller.setProtocolFeeWhitelist(fee, true);
+        assertTrue(controller.protocolFeeWhitelist(fee));
+        assertEq(_storedProtocolFee(key), originalFee);
+        controller.setProtocolFee(key, fee);
+        assertEq(_storedProtocolFee(key), fee);
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeWhitelistUpdated(fee, false);
+        vm.prank(caller);
+        controller.setProtocolFeeWhitelist(fee, false);
+        assertFalse(controller.protocolFeeWhitelist(fee));
+        assertEq(_storedProtocolFee(key), fee);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, fee));
+        controller.setProtocolFee(key, fee);
+    }
+
+    function testWhitelistRejectsInvalidDirectionalFees(bool upperDirection, uint16 invalidFee) public {
+        ProtocolFeeController controller = _deployController(false);
+        uint24 fee = uint24(bound(invalidFee, 4001, 4095));
+        if (upperDirection) fee <<= 12;
+        vm.expectRevert(abi.encodeWithSelector(IProtocolFees.ProtocolFeeTooLarge.selector, fee));
+        controller.setProtocolFeeWhitelist(fee, true);
+        assertFalse(controller.protocolFeeWhitelist(fee));
+    }
+
+    function testWhitelistMatchesExactPackedFee(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        controller.setProtocolFeeWhitelist(100, true);
+        controller.setProtocolFee(key, 100);
+        assertEq(_storedProtocolFee(key), 100);
+        uint24 reverseFee = 100 << 12;
+        uint24 bothDirections = 100 | reverseFee;
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, reverseFee));
+        controller.setProtocolFee(key, reverseFee);
+        vm.expectRevert(
+            abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, bothDirections)
+        );
+        controller.setProtocolFee(key, bothDirections);
+        controller.setProtocolFeeWhitelist(bothDirections, true);
+        controller.setProtocolFee(key, bothDirections);
+        assertEq(_storedProtocolFee(key), bothDirections);
+    }
+
+    function testZeroFeeRequiresWhitelisting(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, uint24(0)));
+        controller.setProtocolFee(key, 0);
+        controller.setProtocolFeeWhitelist(0, true);
+        controller.setProtocolFee(key, 0);
+        _tradeBothDirections(key);
+        assertEq(IProtocolFees(address(key.poolManager)).protocolFeesAccrued(currency0), 0);
+        assertEq(IProtocolFees(address(key.poolManager)).protocolFeesAccrued(currency1), 0);
+    }
+
+    function testBatchSetProtocolFee(bool bin, bool asSetter, uint16 fee0, uint16 fee1) public {
+        fee0 = uint16(bound(fee0, 0, 4000));
+        fee1 = uint16(bound(fee1, 0, 4000));
+        ProtocolFeeController controller = _deployController(bin);
+        address operator = makeAddr("operator");
+        controller.grantRole(controller.FEE_WHITELIST_ROLE(), operator);
+        PoolKey[] memory keys = new PoolKey[](2);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _initializeFeePool(bin, 3000);
+        uint24[] memory fees = new uint24[](2);
+        fees[0] = uint24(fee0) | (uint24(fee1) << 12);
+        fees[1] = uint24(fee1) | (uint24(fee0) << 12);
+        vm.startPrank(operator);
+        controller.setProtocolFeeWhitelist(fees[0], true);
+        controller.setProtocolFeeWhitelist(fees[1], true);
+        vm.stopPrank();
+        address caller = asSetter ? makeAddr("setter") : address(this);
+        if (asSetter) controller.grantRole(controller.FEE_SETTER_ROLE(), caller);
+        vm.prank(caller);
+        controller.batchSetProtocolFee(keys, fees);
+        assertEq(_storedProtocolFee(keys[0]), fees[0]);
+        assertEq(_storedProtocolFee(keys[1]), fees[1]);
+    }
+
+    function testBatchSetProtocolFeeRollsBack(bool bin, bool asSetter, uint8 failure) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](2);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _initializeFeePool(bin, 3000);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+        uint24[] memory fees = new uint24[](2);
+        fees[1] = 1;
+        controller.setProtocolFeeWhitelist(0, true);
+        controller.setProtocolFeeWhitelist(1, true);
+        address caller = asSetter ? makeAddr("setter") : address(this);
+        if (asSetter) controller.grantRole(controller.FEE_SETTER_ROLE(), caller);
+        failure = uint8(bound(failure, 0, 3));
+        bytes memory expectedError;
+        if (failure == 0) {
+            fees[1] = 4001 << 12;
+            expectedError = abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, fees[1]);
+        } else if (failure == 1) {
+            keys[1] = _feePoolKey(!bin, 3000);
+            expectedError = abi.encodeWithSelector(ProtocolFeeController.InvalidPoolManager.selector);
+        } else if (failure == 2) {
+            controller.setProtocolFeeWhitelist(1, false);
+            expectedError = abi.encodeWithSelector(ProtocolFeeController.ProtocolFeeNotWhitelisted.selector, fees[1]);
+        } else {
+            keys[1] = _feePoolKey(bin, 4000);
+            expectedError = abi.encodeWithSelector(IPoolManager.PoolNotInitialized.selector);
+        }
+        vm.prank(caller);
+        vm.expectRevert(expectedError);
+        controller.batchSetProtocolFee(keys, fees);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+    }
+
+    function testBatchCollectionAfterSwaps(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued0 = manager.protocolFeesAccrued(currency0);
+        uint256 accrued1 = manager.protocolFeesAccrued(currency1);
+        assertGt(accrued0, 0);
+        assertGt(accrued1, 0);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient0");
+        recipients[1] = makeAddr("recipient1");
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency1;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = accrued0 / 2;
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeCollected(currency0, amounts[0]);
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeCollected(currency1, accrued1);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(currency0.balanceOf(recipients[0]), amounts[0]);
+        assertEq(currency1.balanceOf(recipients[1]), accrued1);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued0 - amounts[0]);
+        assertEq(manager.protocolFeesAccrued(currency1), 0);
+
+        controller.collectProtocolFee(recipients[0], currency0, 0);
+        assertEq(currency0.balanceOf(recipients[0]), accrued0);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+    }
+
+    function testBatchCollectionRollsBackTransfers(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued0 = manager.protocolFeesAccrued(currency0);
+        uint256 accrued1 = manager.protocolFeesAccrued(currency1);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient0");
+        recipients[1] = makeAddr("recipient1");
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency1;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[1] = accrued1 + 1;
+        vm.expectRevert(stdError.arithmeticError);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued0);
+        assertEq(manager.protocolFeesAccrued(currency1), accrued1);
+        assertEq(currency0.balanceOf(recipients[0]), 0);
+        assertEq(currency1.balanceOf(recipients[1]), 0);
+    }
+
+    function testBatchCollectionRepeatedCurrency(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued = manager.protocolFeesAccrued(currency0);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient0");
+        recipients[1] = makeAddr("recipient1");
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency0;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = accrued / 2;
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(currency0.balanceOf(recipients[0]), amounts[0]);
+        assertEq(currency0.balanceOf(recipients[1]), accrued - amounts[0]);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+    }
+
+    function testBatchArrayLengthsAndAuthorization() public {
+        ProtocolFeeController controller = _deployController(false);
+        PoolKey[] memory keys = new PoolKey[](0);
+        uint24[] memory fees = new uint24[](0);
+        address[] memory recipients = new address[](0);
+        Currency[] memory currencies = new Currency[](0);
+        uint256[] memory amounts = new uint256[](0);
+        controller.batchSetProtocolFee(keys, fees);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchSetProtocolFee(keys, new uint24[](1));
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchSetProtocolFee(new PoolKey[](1), fees);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(new address[](1), currencies, amounts);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(recipients, new Currency[](1), amounts);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(recipients, currencies, new uint256[](1));
+
+        address stranger = makeAddr("stranger");
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger);
+        vm.startPrank(stranger);
+        vm.expectRevert(unauthorized);
+        controller.batchSetProtocolFee(keys, fees);
+        vm.expectRevert(unauthorized);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeWhitelist(0, true);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeWhitelist(0, false);
+        vm.stopPrank();
+    }
+
+    function _deployController(bool bin) internal returns (ProtocolFeeController controller) {
+        address manager = bin ? address(binPoolManager) : address(clPoolManager);
+        controller = new ProtocolFeeController(manager);
+        IProtocolFees(manager).setProtocolFeeController(controller);
+    }
+
+    function _feePoolKey(bool bin, uint24 fee) internal view returns (PoolKey memory key) {
+        key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: fee == LPFeeLibrary.DYNAMIC_FEE_FLAG ? IHooks(address(hooksContract)) : IHooks(address(0)),
+            poolManager: bin ? IPoolManager(address(binPoolManager)) : IPoolManager(address(clPoolManager)),
+            fee: fee,
+            parameters: bin ? bytes32(0).setBinStep(1) : bytes32(0).setTickSpacing(10)
+        });
+    }
+
+    function _initializeFeePool(bool bin, uint24 fee) internal returns (PoolKey memory key) {
+        key = _feePoolKey(bin, fee);
+        if (bin) binPoolManager.initialize(key, ID_ONE);
+        else clPoolManager.initialize(key, Constants.SQRT_RATIO_1_1);
+    }
+
+    function _storedProtocolFee(PoolKey memory key) internal view returns (uint24 fee) {
+        if (address(key.poolManager) == address(binPoolManager)) (, fee,) = binPoolManager.getSlot0(key.toId());
+        else (,, fee,) = clPoolManager.getSlot0(key.toId());
+    }
+
+    function _tradeBothDirections(PoolKey memory key) internal {
+        if (address(key.poolManager) == address(binPoolManager)) {
+            binLiquidityHelper.mint(key, _getSingleBinMintParams(ID_ONE, 500 ether, 500 ether), abi.encode(0));
+            binSwapHelper.swap(key, true, -int128(100 ether), BinSwapHelper.TestSettings(true, true), "");
+            binSwapHelper.swap(key, false, -int128(50 ether), BinSwapHelper.TestSettings(true, true), "");
+        } else {
+            CLPoolManagerRouter router = new CLPoolManagerRouter(vault, clPoolManager);
+            IERC20(Currency.unwrap(currency0)).approve(address(router), 10000 ether);
+            IERC20(Currency.unwrap(currency1)).approve(address(router), 10000 ether);
+            router.modifyPosition(
+                key,
+                ICLPoolManager.ModifyLiquidityParams({
+                    tickLower: -10, tickUpper: 10, liquidityDelta: 1000000 ether, salt: 0
+                }),
+                ""
+            );
+            router.swap(
+                key,
+                ICLPoolManager.SwapParams({
+                    zeroForOne: true, amountSpecified: -100 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+                }),
+                CLPoolManagerRouter.SwapTestSettings({withdrawTokens: true, settleUsingTransfer: true}),
+                ""
+            );
+            router.swap(
+                key,
+                ICLPoolManager.SwapParams({
+                    zeroForOne: false, amountSpecified: -50 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_RATIO - 1
+                }),
+                CLPoolManagerRouter.SwapTestSettings({withdrawTokens: true, settleUsingTransfer: true}),
+                ""
+            );
+        }
     }
 
     function _calculateLPFeeThreshold(ProtocolFeeController controller) internal view returns (uint24) {
