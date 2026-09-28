@@ -28,7 +28,6 @@ import {BinTestHelper} from "./pool-bin/helpers/BinTestHelper.sol";
 import {BinSwapHelper} from "./pool-bin/helpers/BinSwapHelper.sol";
 import {BinLiquidityHelper} from "./pool-bin/helpers/BinLiquidityHelper.sol";
 import {HooksContract} from "./libraries/Hooks/HooksContract.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
@@ -797,8 +796,8 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         bytes32 role = controller.FEE_SETTER_ROLE();
         address setter = makeAddr("setter");
         assertTrue(controller.supportsInterface(type(IAccessControlEnumerable).interfaceId));
-        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 1);
-        assertEq(controller.getRoleMember(controller.DEFAULT_ADMIN_ROLE(), 0), address(this));
+        assertEq(role, keccak256("FEE_SETTER_ROLE"));
+        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 0);
         controller.grantRole(role, setter);
         controller.grantRole(role, setter);
         assertEq(controller.getRoleMemberCount(role), 1);
@@ -826,7 +825,6 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         ProtocolFeeController controller = _deployController(false);
         bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
         address account = makeAddr("account");
-        controller.renounceRole(adminRole, address(this));
         assertEq(controller.getRoleMemberCount(adminRole), 0);
 
         controller.grantRole(role, account);
@@ -845,35 +843,34 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         assertEq(controller.getRoleMemberCount(adminRole), 0);
     }
 
-    function testAdminCanManageRolesWithoutOwnership() public {
+    function testAdminCannotManageRolesWithoutOwnership() public {
         ProtocolFeeController controller = _deployController(false);
         address admin = makeAddr("admin");
         address setter = makeAddr("setter");
         bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
         bytes32 role = controller.FEE_SETTER_ROLE();
         controller.grantRole(adminRole, admin);
+        controller.grantRole(role, setter);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, admin);
         vm.startPrank(admin);
-        controller.grantRole(role, setter);
-        assertTrue(controller.hasRole(role, setter));
+        vm.expectRevert(unauthorized);
+        controller.grantRole(role, admin);
+        vm.expectRevert(unauthorized);
         controller.revokeRole(role, setter);
-        assertFalse(controller.hasRole(role, setter));
+        assertFalse(controller.hasRole(role, admin));
+        assertTrue(controller.hasRole(role, setter));
         controller.renounceRole(adminRole, admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, admin, adminRole)
-        );
-        controller.grantRole(role, setter);
+        assertFalse(controller.hasRole(adminRole, admin));
         vm.stopPrank();
     }
 
-    function testOwnershipTransferToSelfPreservesAdmin() public {
+    function testOwnershipTransferToSelfDoesNotGrantAdmin() public {
         ProtocolFeeController controller = _deployController(false);
         controller.transferOwnership(address(this));
         controller.acceptOwnership();
         assertEq(controller.owner(), address(this));
         assertEq(controller.pendingOwner(), address(0));
-        bytes32 role = controller.DEFAULT_ADMIN_ROLE();
-        assertEq(controller.getRoleMemberCount(role), 1);
-        assertEq(controller.getRoleMember(role, 0), address(this));
+        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 0);
     }
 
     function testOwnershipTransferLeavesRolesForManualManagement() public {
@@ -882,12 +879,11 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         bytes32 role = controller.FEE_SETTER_ROLE();
         address newOwner = makeAddr("newOwner");
         address operator = makeAddr("operator");
+        controller.grantRole(adminRole, address(this));
         controller.grantRole(role, address(this));
         controller.transferOwnership(newOwner);
         vm.prank(newOwner);
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, newOwner, adminRole)
-        );
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, newOwner));
         controller.grantRole(role, operator);
 
         vm.prank(newOwner);
@@ -895,37 +891,39 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         assertTrue(controller.hasRole(adminRole, address(this)));
         assertTrue(controller.hasRole(role, address(this)));
         assertFalse(controller.hasRole(adminRole, newOwner));
-        assertEq(controller.getRoleMemberCount(adminRole), 1);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this));
+        vm.expectRevert(unauthorized);
         controller.grantRole(role, operator);
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, address(this));
 
         vm.startPrank(newOwner);
         controller.revokeRole(adminRole, address(this));
         controller.revokeRole(role, address(this));
-        controller.revokeRole(role, operator);
         controller.grantRole(role, operator);
         vm.stopPrank();
         assertEq(controller.getRoleMemberCount(adminRole), 0);
         assertEq(controller.getRoleMemberCount(role), 1);
         assertEq(controller.getRoleMember(role, 0), operator);
-        bytes memory unauthorized =
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, address(this), adminRole);
-        vm.expectRevert(unauthorized);
-        controller.grantRole(role, address(this));
-        vm.expectRevert(unauthorized);
-        controller.revokeRole(role, operator);
     }
 
-    function testRenounceOwnershipLeavesRolesUnchanged() public {
+    function testRenounceOwnershipDisablesRoleManagement() public {
         ProtocolFeeController controller = _deployController(false);
         bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
         bytes32 role = controller.FEE_SETTER_ROLE();
+        controller.grantRole(adminRole, address(this));
         controller.grantRole(role, address(this));
         controller.renounceOwnership();
         assertEq(controller.owner(), address(0));
         assertTrue(controller.hasRole(adminRole, address(this)));
         assertTrue(controller.hasRole(role, address(this)));
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this));
+        vm.expectRevert(unauthorized);
         controller.grantRole(role, makeAddr("operator"));
-        controller.revokeRole(role, makeAddr("operator"));
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, address(this));
+        controller.renounceRole(role, address(this));
+        assertEq(controller.getRoleMemberCount(role), 0);
     }
 
     function testSetterCannotChangeDefaultsOrRoles() public {
@@ -942,17 +940,9 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         controller.setDefaultProtocolFeeForDynamicFeePool(0);
         vm.expectRevert(unauthorized);
         controller.transferOwnership(operator);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, controller.DEFAULT_ADMIN_ROLE()
-            )
-        );
+        vm.expectRevert(unauthorized);
         controller.grantRole(role, makeAddr("anotherOperator"));
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, controller.DEFAULT_ADMIN_ROLE()
-            )
-        );
+        vm.expectRevert(unauthorized);
         controller.revokeRole(role, operator);
         vm.stopPrank();
     }

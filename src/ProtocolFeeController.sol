@@ -35,7 +35,7 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
     address public immutable poolManager;
 
     /// @notice Allows applying the current protocolFeeForPool policy to existing pools.
-    bytes32 public constant FEE_SETTER_ROLE = keccak256(abi.encode("FEE_SETTER_ROLE"));
+    bytes32 public constant FEE_SETTER_ROLE = keccak256("FEE_SETTER_ROLE");
 
     /// @notice the default protocol fee for dynamic fee pool,
     /// every newly created dynamic fee pool will have this default protocol fee
@@ -53,7 +53,6 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
 
     constructor(address _poolManager) Ownable(msg.sender) {
         poolManager = _poolManager;
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
     modifier onlyRoleOrOwner(bytes32 role) {
@@ -61,16 +60,14 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         _;
     }
 
-    /// @notice Grant a role as the owner or the role's admin.
-    function grantRole(bytes32 role, address account) public override(AccessControl, IAccessControl) {
-        if (msg.sender == owner()) _grantRole(role, account);
-        else super.grantRole(role, account);
+    /// @notice Grant a role as the owner.
+    function grantRole(bytes32 role, address account) public override(AccessControl, IAccessControl) onlyOwner {
+        _grantRole(role, account);
     }
 
-    /// @notice Revoke a role as the owner or the role's admin.
-    function revokeRole(bytes32 role, address account) public override(AccessControl, IAccessControl) {
-        if (msg.sender == owner()) _revokeRole(role, account);
-        else super.revokeRole(role, account);
+    /// @notice Revoke a role as the owner.
+    function revokeRole(bytes32 role, address account) public override(AccessControl, IAccessControl) onlyOwner {
+        _revokeRole(role, account);
     }
 
     /// @notice Set the protocol fee used when dynamic fee pools are initialized or refreshed.
