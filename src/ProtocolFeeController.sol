@@ -3,8 +3,9 @@
 pragma solidity 0.8.26;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
+import {AccessControl, IAccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {PoolKey} from "./types/PoolKey.sol";
-import {PoolId} from "./types/PoolId.sol";
 import {Currency} from "./types/Currency.sol";
 import {LPFeeLibrary} from "./libraries/LPFeeLibrary.sol";
 import {IProtocolFeeController} from "./interfaces/IProtocolFeeController.sol";
@@ -12,9 +13,7 @@ import {IProtocolFees} from "./interfaces/IProtocolFees.sol";
 import {ProtocolFeeLibrary} from "./libraries/ProtocolFeeLibrary.sol";
 
 /// @notice ProtocolFeeController for both Pool type
-contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
-    using ProtocolFeeLibrary for uint24;
-
+contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessControlEnumerable {
     /// @notice throw when the pool manager saved does not match the pool manager from the pool key
     error InvalidPoolManager();
 
@@ -24,6 +23,8 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
     /// @notice throw when the protocol fee split ratio is invalid i.e. greater than 100%
     error InvalidProtocolFeeSplitRatio();
 
+    error ArrayLengthMismatch();
+
     /// @notice 100% in hundredths of a bip
     uint256 private constant ONE_HUNDRED_PERCENT_RATIO = 1e6;
 
@@ -32,6 +33,9 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
     uint256 public protocolFeeSplitRatio = 33 * 1e4;
 
     address public immutable poolManager;
+
+    /// @notice Allows applying the current protocolFeeForPool policy to existing pools.
+    bytes32 public constant FEE_SETTER_ROLE = keccak256(abi.encode("FEE_SETTER_ROLE"));
 
     /// @notice the default protocol fee for dynamic fee pool,
     /// every newly created dynamic fee pool will have this default protocol fee
@@ -49,10 +53,28 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     constructor(address _poolManager) Ownable(msg.sender) {
         poolManager = _poolManager;
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
-    /// @notice Set the default protocol fee for dynamic fee pool, this will only impact the newly created dynamic fee pool
-    /// all those existing dynamic fee pools will not be affected, they will keep using the default protocol fee set at the time of creation
+    modifier onlyRoleOrOwner(bytes32 role) {
+        if (!hasRole(role, msg.sender)) _checkOwner();
+        _;
+    }
+
+    /// @notice Grant a role as the owner or the role's admin.
+    function grantRole(bytes32 role, address account) public override(AccessControl, IAccessControl) {
+        if (msg.sender == owner()) _grantRole(role, account);
+        else super.grantRole(role, account);
+    }
+
+    /// @notice Revoke a role as the owner or the role's admin.
+    function revokeRole(bytes32 role, address account) public override(AccessControl, IAccessControl) {
+        if (msg.sender == owner()) _revokeRole(role, account);
+        else super.revokeRole(role, account);
+    }
+
+    /// @notice Set the protocol fee used when dynamic fee pools are initialized or refreshed.
+    /// @dev Existing pools keep their stored fees until explicitly updated.
     /// @param newDefaultProtocolFeeForDynamicFeePool 1000 = 0.1%, the initial setting is 0.03% i.e. 3bps
     function setDefaultProtocolFeeForDynamicFeePool(uint24 newDefaultProtocolFeeForDynamicFeePool) external onlyOwner {
         // cap the protocol fee at 0.4%, if it's over the limit we revert the tx
@@ -100,7 +122,7 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
     }
 
     /// @inheritdoc IProtocolFeeController
-    function protocolFeeForPool(PoolKey memory poolKey) external view override returns (uint24 protocolFee) {
+    function protocolFeeForPool(PoolKey memory poolKey) public view override returns (uint24 protocolFee) {
         if (address(poolKey.poolManager) != poolManager) revert InvalidPoolManager();
 
         // calculate the protocol fee based on the predefined rule
@@ -141,8 +163,30 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
 
     /// @notice Override the default protocol fee for the pool
     /// @dev this could be used for marketing campaign where PCS takes 0 protocol fee for a pool for a period
-    /// @param newProtocolFee 1000 = 0.1%, and max at 4000 = 0.4%. If set at 0.1%, this means 0.1% of amountIn for each swap will go to protocol
+    /// @param newProtocolFee Packed directional fees: lower 12 bits for 0->1, upper 12 bits for 1->0.
+    /// Each direction is capped at 4000, or 0.4% of swap input.
     function setProtocolFee(PoolKey memory key, uint24 newProtocolFee) external onlyOwner {
+        _setProtocolFee(key, newProtocolFee);
+    }
+
+    /// @notice Update multiple pools atomically. Fees use the same encoding as setProtocolFee.
+    function batchSetProtocolFee(PoolKey[] calldata keys, uint24[] calldata newProtocolFees) external onlyOwner {
+        if (keys.length != newProtocolFees.length) revert ArrayLengthMismatch();
+        for (uint256 i; i < keys.length; ++i) {
+            _setProtocolFee(keys[i], newProtocolFees[i]);
+        }
+    }
+
+    /// @notice Apply the current protocolFeeForPool result to multiple pools atomically.
+    /// @dev Replaces any custom fee overrides on the supplied pools.
+    function batchRefreshProtocolFee(PoolKey[] calldata keys) external onlyRoleOrOwner(FEE_SETTER_ROLE) {
+        for (uint256 i; i < keys.length; ++i) {
+            PoolKey memory key = keys[i];
+            _setProtocolFee(key, protocolFeeForPool(key));
+        }
+    }
+
+    function _setProtocolFee(PoolKey memory key, uint24 newProtocolFee) internal {
         if (address(key.poolManager) != poolManager) revert InvalidPoolManager();
 
         // no need to validate the protocol fee as it will be done in the pool manager
@@ -154,6 +198,23 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step {
     /// @param currency The currency of the protocol fee
     /// @param amount The amount of the protocol fee to collect, 0 means collect all
     function collectProtocolFee(address recipient, Currency currency, uint256 amount) external onlyOwner {
+        _collectProtocolFee(recipient, currency, amount);
+    }
+
+    /// @notice Collect multiple fees atomically. Zero collects the remaining balance for a currency.
+    /// @dev Recipients may repeat; each entry receives the corresponding currency and amount.
+    function batchCollectProtocolFee(
+        address[] calldata recipients,
+        Currency[] calldata currencies,
+        uint256[] calldata amounts
+    ) external onlyOwner {
+        if (recipients.length != currencies.length || currencies.length != amounts.length) revert ArrayLengthMismatch();
+        for (uint256 i; i < currencies.length; ++i) {
+            _collectProtocolFee(recipients[i], currencies[i], amounts[i]);
+        }
+    }
+
+    function _collectProtocolFee(address recipient, Currency currency, uint256 amount) internal {
         // balance check to handle fee-on-transfer tokens
         uint256 balanceBefore = currency.balanceOf(recipient);
         IProtocolFees(poolManager).collectProtocolFees(recipient, currency, amount);
