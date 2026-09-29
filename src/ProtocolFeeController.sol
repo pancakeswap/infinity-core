@@ -23,6 +23,7 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
     /// @notice throw when the protocol fee split ratio is invalid i.e. greater than 100%
     error InvalidProtocolFeeSplitRatio();
 
+    /// @notice throw when the input arrays of a batch function have different lengths
     error ArrayLengthMismatch();
 
     /// @notice 100% in hundredths of a bip
@@ -34,7 +35,9 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
 
     address public immutable poolManager;
 
-    /// @notice Allows applying the current protocolFeeForPool policy to existing pools.
+    /// @notice Role allowed to call batchRefreshProtocolFee, i.e. re-apply the current protocolFeeForPool rule to existing pools
+    /// @dev Holders cannot set arbitrary fees, they can only sync pools to the fee derived from the owner's configuration.
+    /// The role is granted and revoked by the owner only, DEFAULT_ADMIN_ROLE is not used in this contract
     bytes32 public constant FEE_SETTER_ROLE = keccak256("FEE_SETTER_ROLE");
 
     /// @notice the default protocol fee for dynamic fee pool,
@@ -55,17 +58,26 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         poolManager = _poolManager;
     }
 
+    /// @notice Restrict the function to accounts holding `role` or the owner
+    /// @dev reverts with OwnableUnauthorizedAccount if the caller has neither
     modifier onlyRoleOrOwner(bytes32 role) {
         if (!hasRole(role, msg.sender)) _checkOwner();
         _;
     }
 
-    /// @notice Grant a role as the owner.
+    /// @notice Grant `role` to `account`, only callable by the owner
+    /// @dev Overrides AccessControl so role management follows Ownable2Step ownership instead of the role admin
+    /// @param role The role to grant, e.g. FEE_SETTER_ROLE
+    /// @param account The account to receive the role
     function grantRole(bytes32 role, address account) public override(AccessControl, IAccessControl) onlyOwner {
         _grantRole(role, account);
     }
 
-    /// @notice Revoke a role as the owner.
+    /// @notice Revoke `role` from `account`, only callable by the owner
+    /// @dev Overrides AccessControl so role management follows Ownable2Step ownership instead of the role admin.
+    /// Role holders can still give up their own role via renounceRole
+    /// @param role The role to revoke, e.g. FEE_SETTER_ROLE
+    /// @param account The account to lose the role
     function revokeRole(bytes32 role, address account) public override(AccessControl, IAccessControl) onlyOwner {
         _revokeRole(role, account);
     }
@@ -166,7 +178,10 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         _setProtocolFee(key, newProtocolFee);
     }
 
-    /// @notice Update multiple pools atomically. Fees use the same encoding as setProtocolFee.
+    /// @notice Override the protocol fee for multiple pools in a single tx
+    /// @dev The whole batch reverts if any pool has an invalid pool manager or an invalid fee
+    /// @param keys The pools to update
+    /// @param newProtocolFees The new protocol fee for each pool in `keys`, same encoding as setProtocolFee
     function batchSetProtocolFee(PoolKey[] calldata keys, uint24[] calldata newProtocolFees) external onlyOwner {
         if (keys.length != newProtocolFees.length) revert ArrayLengthMismatch();
         for (uint256 i; i < keys.length; ++i) {
@@ -174,8 +189,11 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         }
     }
 
-    /// @notice Apply the current protocolFeeForPool result to multiple pools atomically.
-    /// @dev Replaces any custom fee overrides on the supplied pools.
+    /// @notice Reset the protocol fee of multiple pools to the value given by protocolFeeForPool
+    /// @dev Useful to sync existing pools after defaultProtocolFeeForDynamicFeePool or protocolFeeSplitRatio is updated.
+    /// This replaces any custom fee set via setProtocolFee on the supplied pools, e.g. a 0 fee marketing campaign.
+    /// The whole batch reverts if any pool has an invalid pool manager
+    /// @param keys The pools to refresh
     function batchRefreshProtocolFee(PoolKey[] calldata keys) external onlyRoleOrOwner(FEE_SETTER_ROLE) {
         for (uint256 i; i < keys.length; ++i) {
             PoolKey memory key = keys[i];
@@ -183,6 +201,9 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         }
     }
 
+    /// @notice Set the protocol fee for a pool on the pool manager
+    /// @param key The pool to update, must belong to `poolManager`
+    /// @param newProtocolFee Packed directional fees, see setProtocolFee
     function _setProtocolFee(PoolKey memory key, uint24 newProtocolFee) internal {
         if (address(key.poolManager) != poolManager) revert InvalidPoolManager();
 
@@ -198,8 +219,13 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         _collectProtocolFee(recipient, currency, amount);
     }
 
-    /// @notice Collect multiple fees atomically. Zero collects the remaining balance for a currency.
-    /// @dev Recipients may repeat; each entry receives the corresponding currency and amount.
+    /// @notice Collect protocol fees for multiple currencies / recipients in a single tx
+    /// @dev Entries are processed in order and the whole batch reverts if any collection fails.
+    /// Recipients and currencies may repeat, an amount of 0 collects whatever is still accrued for that currency
+    /// at that point, so it only makes sense as the last entry of a given currency
+    /// @param recipients The address to receive the protocol fee for each entry
+    /// @param currencies The currency to collect for each entry
+    /// @param amounts The amount to collect for each entry, 0 means collect all remaining
     function batchCollectProtocolFee(
         address[] calldata recipients,
         Currency[] calldata currencies,
@@ -211,6 +237,10 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         }
     }
 
+    /// @notice Collect the protocol fee from the pool manager and emit the amount actually received
+    /// @param recipient The address to receive the protocol fee
+    /// @param currency The currency of the protocol fee
+    /// @param amount The amount of the protocol fee to collect, 0 means collect all
     function _collectProtocolFee(address recipient, Currency currency, uint256 amount) internal {
         // balance check to handle fee-on-transfer tokens
         uint256 balanceBefore = currency.balanceOf(recipient);
