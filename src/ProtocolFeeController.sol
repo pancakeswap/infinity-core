@@ -237,7 +237,7 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         }
     }
 
-    /// @notice Collect the protocol fee from the pool manager and emit the amount actually received
+    /// @notice Collect the protocol fee from the pool manager and emit only when a positive amount is received
     /// @param recipient The address to receive the protocol fee
     /// @param currency The currency of the protocol fee
     /// @param amount The amount of the protocol fee to collect, 0 means collect all
@@ -247,6 +247,9 @@ contract ProtocolFeeController is IProtocolFeeController, Ownable2Step, AccessCo
         IProtocolFees(poolManager).collectProtocolFees(recipient, currency, amount);
         uint256 balanceAfter = currency.balanceOf(recipient);
 
-        emit ProtocolFeeCollected(currency, balanceAfter - balanceBefore);
+        uint256 amountCollected = balanceAfter - balanceBefore;
+        if (amountCollected > 0) {
+            emit ProtocolFeeCollected(currency, amountCollected);
+        }
     }
 }

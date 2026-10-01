@@ -1158,6 +1158,50 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         assertEq(manager.protocolFeesAccrued(currency0), 0);
     }
 
+    function testCollectProtocolFeeEmptyBalanceDoesNotEmit(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        address recipient = makeAddr("recipient");
+        vm.recordLogs();
+        controller.collectProtocolFee(recipient, currency0, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].emitter != address(controller));
+        }
+        assertEq(currency0.balanceOf(recipient), 0);
+    }
+
+    function testBatchCollectionEmitsOnlyForReceivedFees(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued = manager.protocolFeesAccrued(currency0);
+        assertGt(accrued, 0);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient");
+        recipients[1] = recipients[0];
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency0;
+        uint256[] memory amounts = new uint256[](2);
+
+        vm.recordLogs();
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 collectionEvents;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(controller)) {
+                assertEq(logs[i].topics[0], keccak256("ProtocolFeeCollected(address,uint256)"));
+                assertEq(logs[i].topics[1], bytes32(uint256(uint160(Currency.unwrap(currency0)))));
+                assertEq(abi.decode(logs[i].data, (uint256)), accrued);
+                ++collectionEvents;
+            }
+        }
+        assertEq(collectionEvents, 1);
+        assertEq(currency0.balanceOf(recipients[0]), accrued);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+    }
+
     function testBatchArrayLengthsAndAuthorization() public {
         ProtocolFeeController controller = _deployController(false);
         PoolKey[] memory keys = new PoolKey[](0);
