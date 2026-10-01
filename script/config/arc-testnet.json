@@ -1,0 +1,12 @@
+{
+    "create3Factory": "0x38Ab3f2CE00973A51d3A2A04d634C9bcbf20e4e1",
+    "poolOwner": "0x7e283FDEe79d0D06973316e74EaEf58c2854f6AA",
+    "vault": "0x238a358808379702088667322f80aC48bAd5e6c4",
+    "clPoolManager": "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b",
+    "binPoolManager": "",
+    "protocolFeeControllerOwner": "0x7e283FDEe79d0D06973316e74EaEf58c2854f6AA",
+    "clProtocolFeeController": "0x15F6180033aEa66377d2A1778e418591C00dEb4c",
+    "binProtocolFeeController": "",
+    "clPoolManagerOwnerContract": "0x13f818BDC906C16764d8325809B4b67A9981f792",
+    "binPoolManagerOwnerContract": ""
+}
