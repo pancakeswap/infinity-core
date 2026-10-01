@@ -28,6 +28,7 @@ import {BinTestHelper} from "./pool-bin/helpers/BinTestHelper.sol";
 import {BinSwapHelper} from "./pool-bin/helpers/BinSwapHelper.sol";
 import {BinLiquidityHelper} from "./pool-bin/helpers/BinLiquidityHelper.sol";
 import {HooksContract} from "./libraries/Hooks/HooksContract.sol";
+import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
 
 contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     using CLPoolParametersHelper for bytes32;
@@ -740,6 +741,518 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         controller.collectProtocolFee(makeAddr("recipient"), currency0, 0);
         assertEq(binPoolManager.protocolFeesAccrued(currency0), 0);
         assertEq(IERC20(Currency.unwrap(currency0)).balanceOf(makeAddr("recipient")), protocolFeeAmount);
+    }
+
+    function testSetterCannotCollectFees(bool bin, bool batch) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued = manager.protocolFeesAccrued(currency0);
+        assertGt(accrued, 0);
+        address operator = makeAddr("operator");
+        controller.grantRole(controller.FEE_SETTER_ROLE(), operator);
+        address recipient = makeAddr("recipient");
+        address[] memory recipients = new address[](1);
+        recipients[0] = recipient;
+        Currency[] memory currencies = new Currency[](1);
+        currencies[0] = currency0;
+        uint256[] memory amounts = new uint256[](1);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        if (batch) controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        else controller.collectProtocolFee(recipient, currency0, 0);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued);
+        assertEq(currency0.balanceOf(recipient), 0);
+
+        if (batch) controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        else controller.collectProtocolFee(recipient, currency0, 0);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+        assertEq(currency0.balanceOf(recipient), accrued);
+    }
+
+    function testSetterCannotOverridePoolFees(bool bin, bool batch) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](1);
+        keys[0] = _initializeFeePool(bin, 2000);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+        uint24[] memory fees = new uint24[](1);
+        address operator = makeAddr("operator");
+        controller.grantRole(controller.FEE_SETTER_ROLE(), operator);
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator));
+        if (batch) controller.batchSetProtocolFee(keys, fees);
+        else controller.setProtocolFee(keys[0], 0);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+    }
+
+    function testEnumerableSetterRole(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](1);
+        keys[0] = _initializeFeePool(bin, 2000);
+        controller.setProtocolFeeSplitRatio(0);
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        address setter = makeAddr("setter");
+        assertTrue(controller.supportsInterface(type(IAccessControlEnumerable).interfaceId));
+        assertEq(role, keccak256("FEE_SETTER_ROLE"));
+        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 0);
+        controller.grantRole(role, setter);
+        controller.grantRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), setter);
+        vm.prank(setter);
+        controller.batchRefreshProtocolFee(keys);
+        assertEq(_storedProtocolFee(keys[0]), 0);
+
+        controller.revokeRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(setter);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, setter));
+        controller.batchRefreshProtocolFee(keys);
+
+        controller.grantRole(role, setter);
+        vm.prank(setter);
+        controller.renounceRole(role, setter);
+        assertEq(controller.getRoleMemberCount(role), 0);
+        vm.prank(setter);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, setter));
+        controller.batchRefreshProtocolFee(keys);
+    }
+
+    function testOwnerCanManageAnyRoleWithoutAdmin(bytes32 role) public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        address account = makeAddr("account");
+        assertEq(controller.getRoleMemberCount(adminRole), 0);
+
+        controller.grantRole(role, account);
+        assertTrue(controller.hasRole(role, account));
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), account);
+        controller.revokeRole(role, account);
+        assertFalse(controller.hasRole(role, account));
+        assertEq(controller.getRoleMemberCount(role), 0);
+
+        controller.grantRole(adminRole, account);
+        assertTrue(controller.hasRole(adminRole, account));
+        controller.revokeRole(adminRole, account);
+        controller.grantRole(adminRole, address(this));
+        controller.revokeRole(adminRole, address(this));
+        assertEq(controller.getRoleMemberCount(adminRole), 0);
+    }
+
+    function testAdminCannotManageRolesWithoutOwnership() public {
+        ProtocolFeeController controller = _deployController(false);
+        address admin = makeAddr("admin");
+        address setter = makeAddr("setter");
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        controller.grantRole(adminRole, admin);
+        controller.grantRole(role, setter);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, admin);
+        vm.startPrank(admin);
+        vm.expectRevert(unauthorized);
+        controller.grantRole(role, admin);
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, setter);
+        assertFalse(controller.hasRole(role, admin));
+        assertTrue(controller.hasRole(role, setter));
+        controller.renounceRole(adminRole, admin);
+        assertFalse(controller.hasRole(adminRole, admin));
+        vm.stopPrank();
+    }
+
+    function testOwnershipTransferToSelfDoesNotGrantAdmin() public {
+        ProtocolFeeController controller = _deployController(false);
+        controller.transferOwnership(address(this));
+        controller.acceptOwnership();
+        assertEq(controller.owner(), address(this));
+        assertEq(controller.pendingOwner(), address(0));
+        assertEq(controller.getRoleMemberCount(controller.DEFAULT_ADMIN_ROLE()), 0);
+    }
+
+    function testOwnershipTransferLeavesRolesForManualManagement() public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        address newOwner = makeAddr("newOwner");
+        address operator = makeAddr("operator");
+        controller.grantRole(adminRole, address(this));
+        controller.grantRole(role, address(this));
+        controller.transferOwnership(newOwner);
+        vm.prank(newOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, newOwner));
+        controller.grantRole(role, operator);
+
+        vm.prank(newOwner);
+        controller.acceptOwnership();
+        assertTrue(controller.hasRole(adminRole, address(this)));
+        assertTrue(controller.hasRole(role, address(this)));
+        assertFalse(controller.hasRole(adminRole, newOwner));
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this));
+        vm.expectRevert(unauthorized);
+        controller.grantRole(role, operator);
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, address(this));
+
+        vm.startPrank(newOwner);
+        controller.revokeRole(adminRole, address(this));
+        controller.revokeRole(role, address(this));
+        controller.grantRole(role, operator);
+        vm.stopPrank();
+        assertEq(controller.getRoleMemberCount(adminRole), 0);
+        assertEq(controller.getRoleMemberCount(role), 1);
+        assertEq(controller.getRoleMember(role, 0), operator);
+    }
+
+    function testRenounceOwnershipDisablesRoleManagement() public {
+        ProtocolFeeController controller = _deployController(false);
+        bytes32 adminRole = controller.DEFAULT_ADMIN_ROLE();
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        controller.grantRole(adminRole, address(this));
+        controller.grantRole(role, address(this));
+        controller.renounceOwnership();
+        assertEq(controller.owner(), address(0));
+        assertTrue(controller.hasRole(adminRole, address(this)));
+        assertTrue(controller.hasRole(role, address(this)));
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this));
+        vm.expectRevert(unauthorized);
+        controller.grantRole(role, makeAddr("operator"));
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, address(this));
+        controller.renounceRole(role, address(this));
+        assertEq(controller.getRoleMemberCount(role), 0);
+    }
+
+    function testSetterCannotChangeDefaultsOrRoles() public {
+        ProtocolFeeController controller = _deployController(false);
+        address operator = makeAddr("operator");
+        bytes32 role = controller.FEE_SETTER_ROLE();
+        controller.grantRole(role, operator);
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, operator);
+
+        vm.startPrank(operator);
+        vm.expectRevert(unauthorized);
+        controller.setProtocolFeeSplitRatio(0);
+        vm.expectRevert(unauthorized);
+        controller.setDefaultProtocolFeeForDynamicFeePool(0);
+        vm.expectRevert(unauthorized);
+        controller.transferOwnership(operator);
+        vm.expectRevert(unauthorized);
+        controller.grantRole(role, makeAddr("anotherOperator"));
+        vm.expectRevert(unauthorized);
+        controller.revokeRole(role, operator);
+        vm.stopPrank();
+    }
+
+    function testZeroProtocolFee(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        controller.setProtocolFee(key, 0);
+        _tradeBothDirections(key);
+        assertEq(_storedProtocolFee(key), 0);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+        assertEq(manager.protocolFeesAccrued(currency1), 0);
+    }
+
+    function testBatchSetProtocolFee(bool bin, uint16 fee0, uint16 fee1) public {
+        fee0 = uint16(bound(fee0, 0, 4000));
+        fee1 = uint16(bound(fee1, 0, 4000));
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](2);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _initializeFeePool(bin, 3000);
+        uint24[] memory fees = new uint24[](2);
+        fees[0] = uint24(fee0) | (uint24(fee1) << 12);
+        fees[1] = uint24(fee1) | (uint24(fee0) << 12);
+        controller.batchSetProtocolFee(keys, fees);
+        assertEq(_storedProtocolFee(keys[0]), fees[0]);
+        assertEq(_storedProtocolFee(keys[1]), fees[1]);
+    }
+
+    function testBatchSetProtocolFeeRollsBack(bool bin, uint8 failure) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](2);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _initializeFeePool(bin, 3000);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+        uint24[] memory fees = new uint24[](2);
+        failure = uint8(bound(failure, 0, 3));
+        bytes memory expectedError;
+        if (failure < 2) {
+            fees[1] = failure == 0 ? 4001 : 4001 << 12;
+            expectedError = abi.encodeWithSelector(IProtocolFees.ProtocolFeeTooLarge.selector, fees[1]);
+        } else if (failure == 2) {
+            keys[1] = _feePoolKey(!bin, 3000);
+            expectedError = abi.encodeWithSelector(ProtocolFeeController.InvalidPoolManager.selector);
+        } else {
+            keys[1] = _feePoolKey(bin, 4000);
+            expectedError = abi.encodeWithSelector(IPoolManager.PoolNotInitialized.selector);
+        }
+        vm.expectRevert(expectedError);
+        controller.batchSetProtocolFee(keys, fees);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+    }
+
+    function testBatchRefreshProtocolFee(bool bin, bool asSetter, uint24 ratio, uint24 dynamicFee) public {
+        ratio = uint24(bound(ratio, 0, 1e6));
+        dynamicFee = uint24(bound(dynamicFee, 0, 4000));
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](3);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _initializeFeePool(bin, 3000);
+        keys[2] = _initializeFeePool(bin, LPFeeLibrary.DYNAMIC_FEE_FLAG);
+        uint24[] memory originalFees = new uint24[](3);
+        for (uint256 i; i < keys.length; ++i) {
+            originalFees[i] = _storedProtocolFee(keys[i]);
+        }
+
+        controller.setProtocolFeeSplitRatio(ratio);
+        controller.setDefaultProtocolFeeForDynamicFeePool(dynamicFee);
+        for (uint256 i; i < keys.length; ++i) {
+            assertEq(_storedProtocolFee(keys[i]), originalFees[i]);
+        }
+
+        address caller = asSetter ? makeAddr("setter") : address(this);
+        if (asSetter) controller.grantRole(controller.FEE_SETTER_ROLE(), caller);
+        vm.prank(caller);
+        controller.batchRefreshProtocolFee(keys);
+        for (uint256 i; i < keys.length; ++i) {
+            assertEq(_storedProtocolFee(keys[i]), controller.protocolFeeForPool(keys[i]));
+        }
+        assertEq(_storedProtocolFee(keys[2]), dynamicFee | (dynamicFee << 12));
+    }
+
+    function testRefreshReplacesOverrideAndAccruesFees(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](1);
+        keys[0] = _initializeFeePool(bin, 2000);
+        controller.setProtocolFee(keys[0], 0);
+        controller.setProtocolFeeSplitRatio(1e6);
+        assertEq(_storedProtocolFee(keys[0]), 0);
+
+        address setter = makeAddr("setter");
+        controller.grantRole(controller.FEE_SETTER_ROLE(), setter);
+        vm.prank(setter);
+        controller.batchRefreshProtocolFee(keys);
+        assertEq(_storedProtocolFee(keys[0]), uint24(4000 | (4000 << 12)));
+        _tradeBothDirections(keys[0]);
+        IProtocolFees manager = IProtocolFees(address(keys[0].poolManager));
+        assertGt(manager.protocolFeesAccrued(currency0), 0);
+        assertGt(manager.protocolFeesAccrued(currency1), 0);
+    }
+
+    function testDynamicRefreshUsesDefaultDespiteLPFeeChange(bool bin, uint24 lpFee) public {
+        lpFee = uint24(bound(lpFee, 0, bin ? 100000 : 1000000));
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](1);
+        keys[0] = _initializeFeePool(bin, LPFeeLibrary.DYNAMIC_FEE_FLAG);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+
+        vm.prank(address(hooksContract));
+        if (bin) binPoolManager.updateDynamicLPFee(keys[0], lpFee);
+        else clPoolManager.updateDynamicLPFee(keys[0], lpFee);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+        assertEq(controller.protocolFeeForPool(keys[0]), originalFee);
+
+        controller.setProtocolFeeSplitRatio(0);
+        controller.setDefaultProtocolFeeForDynamicFeePool(1234);
+        controller.batchRefreshProtocolFee(keys);
+        assertEq(_storedProtocolFee(keys[0]), uint24(1234 | (1234 << 12)));
+        uint24 storedLPFee;
+        if (bin) (,, storedLPFee) = binPoolManager.getSlot0(keys[0].toId());
+        else (,,, storedLPFee) = clPoolManager.getSlot0(keys[0].toId());
+        assertEq(storedLPFee, lpFee);
+    }
+
+    function testBatchRefreshProtocolFeeRollsBack(bool bin, bool wrongManager) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey[] memory keys = new PoolKey[](2);
+        keys[0] = _initializeFeePool(bin, 2000);
+        keys[1] = _feePoolKey(wrongManager ? !bin : bin, 3000);
+        uint24 originalFee = _storedProtocolFee(keys[0]);
+        controller.setProtocolFeeSplitRatio(0);
+        vm.expectRevert(
+            wrongManager ? ProtocolFeeController.InvalidPoolManager.selector : IPoolManager.PoolNotInitialized.selector
+        );
+        controller.batchRefreshProtocolFee(keys);
+        assertEq(_storedProtocolFee(keys[0]), originalFee);
+    }
+
+    function testBatchCollectionAfterSwaps(bool bin, bool repeatRecipient) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued0 = manager.protocolFeesAccrued(currency0);
+        uint256 accrued1 = manager.protocolFeesAccrued(currency1);
+        assertGt(accrued0, 0);
+        assertGt(accrued1, 0);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient0");
+        recipients[1] = makeAddr("recipient1");
+        if (repeatRecipient) recipients[1] = recipients[0];
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency1;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = accrued0 / 2;
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeCollected(currency0, amounts[0]);
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit ProtocolFeeController.ProtocolFeeCollected(currency1, accrued1);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(currency0.balanceOf(recipients[0]), amounts[0]);
+        assertEq(currency1.balanceOf(recipients[1]), accrued1);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued0 - amounts[0]);
+        assertEq(manager.protocolFeesAccrued(currency1), 0);
+
+        controller.collectProtocolFee(recipients[0], currency0, 0);
+        assertEq(currency0.balanceOf(recipients[0]), accrued0);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+    }
+
+    function testBatchCollectionRollsBackTransfers(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued0 = manager.protocolFeesAccrued(currency0);
+        uint256 accrued1 = manager.protocolFeesAccrued(currency1);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient0");
+        recipients[1] = makeAddr("recipient1");
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency1;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[1] = accrued1 + 1;
+        vm.expectRevert(stdError.arithmeticError);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(manager.protocolFeesAccrued(currency0), accrued0);
+        assertEq(manager.protocolFeesAccrued(currency1), accrued1);
+        assertEq(currency0.balanceOf(recipients[0]), 0);
+        assertEq(currency1.balanceOf(recipients[1]), 0);
+    }
+
+    function testBatchCollectionRepeatedCurrency(bool bin) public {
+        ProtocolFeeController controller = _deployController(bin);
+        PoolKey memory key = _initializeFeePool(bin, 2000);
+        _tradeBothDirections(key);
+        IProtocolFees manager = IProtocolFees(address(key.poolManager));
+        uint256 accrued = manager.protocolFeesAccrued(currency0);
+        address[] memory recipients = new address[](2);
+        recipients[0] = makeAddr("recipient");
+        recipients[1] = recipients[0];
+        Currency[] memory currencies = new Currency[](2);
+        currencies[0] = currency0;
+        currencies[1] = currency0;
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = accrued / 2;
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        assertEq(currency0.balanceOf(recipients[0]), accrued);
+        assertEq(manager.protocolFeesAccrued(currency0), 0);
+    }
+
+    function testBatchArrayLengthsAndAuthorization() public {
+        ProtocolFeeController controller = _deployController(false);
+        PoolKey[] memory keys = new PoolKey[](0);
+        uint24[] memory fees = new uint24[](0);
+        address[] memory recipients = new address[](0);
+        Currency[] memory currencies = new Currency[](0);
+        uint256[] memory amounts = new uint256[](0);
+        controller.batchSetProtocolFee(keys, fees);
+        controller.batchRefreshProtocolFee(keys);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchSetProtocolFee(keys, new uint24[](1));
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchSetProtocolFee(new PoolKey[](1), fees);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(new address[](1), currencies, amounts);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(recipients, new Currency[](1), amounts);
+        vm.expectRevert(ProtocolFeeController.ArrayLengthMismatch.selector);
+        controller.batchCollectProtocolFee(recipients, currencies, new uint256[](1));
+
+        address stranger = makeAddr("stranger");
+        bytes memory unauthorized = abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger);
+        vm.startPrank(stranger);
+        vm.expectRevert(unauthorized);
+        controller.batchSetProtocolFee(keys, fees);
+        vm.expectRevert(unauthorized);
+        controller.batchRefreshProtocolFee(keys);
+        vm.expectRevert(unauthorized);
+        controller.batchCollectProtocolFee(recipients, currencies, amounts);
+        vm.stopPrank();
+    }
+
+    function _deployController(bool bin) internal returns (ProtocolFeeController controller) {
+        address manager = bin ? address(binPoolManager) : address(clPoolManager);
+        controller = new ProtocolFeeController(manager);
+        IProtocolFees(manager).setProtocolFeeController(controller);
+    }
+
+    function _feePoolKey(bool bin, uint24 fee) internal view returns (PoolKey memory key) {
+        key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            hooks: fee == LPFeeLibrary.DYNAMIC_FEE_FLAG ? IHooks(address(hooksContract)) : IHooks(address(0)),
+            poolManager: bin ? IPoolManager(address(binPoolManager)) : IPoolManager(address(clPoolManager)),
+            fee: fee,
+            parameters: bin ? bytes32(0).setBinStep(1) : bytes32(0).setTickSpacing(10)
+        });
+    }
+
+    function _initializeFeePool(bool bin, uint24 fee) internal returns (PoolKey memory key) {
+        key = _feePoolKey(bin, fee);
+        if (bin) binPoolManager.initialize(key, ID_ONE);
+        else clPoolManager.initialize(key, Constants.SQRT_RATIO_1_1);
+    }
+
+    function _storedProtocolFee(PoolKey memory key) internal view returns (uint24 fee) {
+        if (address(key.poolManager) == address(binPoolManager)) (, fee,) = binPoolManager.getSlot0(key.toId());
+        else (,, fee,) = clPoolManager.getSlot0(key.toId());
+    }
+
+    function _tradeBothDirections(PoolKey memory key) internal {
+        if (address(key.poolManager) == address(binPoolManager)) {
+            binLiquidityHelper.mint(key, _getSingleBinMintParams(ID_ONE, 500 ether, 500 ether), abi.encode(0));
+            binSwapHelper.swap(key, true, -int128(100 ether), BinSwapHelper.TestSettings(true, true), "");
+            binSwapHelper.swap(key, false, -int128(50 ether), BinSwapHelper.TestSettings(true, true), "");
+        } else {
+            CLPoolManagerRouter router = new CLPoolManagerRouter(vault, clPoolManager);
+            IERC20(Currency.unwrap(currency0)).approve(address(router), 10000 ether);
+            IERC20(Currency.unwrap(currency1)).approve(address(router), 10000 ether);
+            router.modifyPosition(
+                key,
+                ICLPoolManager.ModifyLiquidityParams({
+                    tickLower: -10, tickUpper: 10, liquidityDelta: 1000000 ether, salt: 0
+                }),
+                ""
+            );
+            router.swap(
+                key,
+                ICLPoolManager.SwapParams({
+                    zeroForOne: true, amountSpecified: -100 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+                }),
+                CLPoolManagerRouter.SwapTestSettings({withdrawTokens: true, settleUsingTransfer: true}),
+                ""
+            );
+            router.swap(
+                key,
+                ICLPoolManager.SwapParams({
+                    zeroForOne: false, amountSpecified: -50 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_RATIO - 1
+                }),
+                CLPoolManagerRouter.SwapTestSettings({withdrawTokens: true, settleUsingTransfer: true}),
+                ""
+            );
+        }
     }
 
     function _calculateLPFeeThreshold(ProtocolFeeController controller) internal view returns (uint24) {
