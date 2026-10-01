@@ -5,7 +5,7 @@
     "clPoolManager": "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b",
     "binPoolManager": "",
     "protocolFeeControllerOwner": "0x7e283FDEe79d0D06973316e74EaEf58c2854f6AA",
-    "clProtocolFeeController": "",
+    "clProtocolFeeController": "0x74Aa9b14049Eccf0eE2183818658B84df427Cb5C",
     "binProtocolFeeController": "",
     "clPoolManagerOwnerContract": "0x13f818BDC906C16764d8325809B4b67A9981f792",
     "binPoolManagerOwnerContract": ""
