@@ -10,7 +10,7 @@ import {IPoolManager} from "../../src/interfaces/IPoolManager.sol";
 import {IBinPoolManager} from "../../src/pool-bin/interfaces/IBinPoolManager.sol";
 import {IProtocolFeeController} from "../../src/interfaces/IProtocolFeeController.sol";
 import {Vault} from "../../src/Vault.sol";
-import {Currency} from "../../src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "../../src/types/Currency.sol";
 import {PoolKey} from "../../src/types/PoolKey.sol";
 import {PoolId} from "../../src/types/PoolId.sol";
 import {BalanceDelta, BalanceDeltaLibrary} from "../../src/types/BalanceDelta.sol";
@@ -1243,6 +1243,62 @@ contract BinPoolManagerTest is Test, BinTestHelper {
 
         assertEq(poolManager.getNextNonEmptyBin(key.toId(), true, activeId), type(uint24).max);
         assertEq(poolManager.getNextNonEmptyBin(key.toId(), false, activeId), 0);
+    }
+
+    function testSwapNativeInForTokenOut() public {
+        key = PoolKey({
+            currency0: CurrencyLibrary.NATIVE,
+            currency1: currency1,
+            hooks: IHooks(address(0)),
+            poolManager: IPoolManager(address(poolManager)),
+            fee: uint24(3000), // 3000 = 0.3%
+            parameters: poolParam.setBinStep(10) // binStep
+        });
+        poolManager.initialize(key, activeId);
+
+        token1.mint(address(this), 1 ether);
+        IBinPoolManager.MintParams memory mintParams = _getSingleBinMintParams(activeId, 1 ether, 1 ether);
+        binLiquidityHelper.mint{value: 1 ether}(key, mintParams, "");
+
+        uint256 token1BalanceBefore = token1.balanceOf(address(this));
+        BinSwapHelper.TestSettings memory testSettings =
+            BinSwapHelper.TestSettings({withdrawTokens: true, settleUsingTransfer: true});
+        binSwapHelper.swap{value: 1 ether}(key, true, -int128(1 ether), testSettings, "");
+
+        assertGt(token1.balanceOf(address(this)), token1BalanceBefore);
+        assertEq(address(binSwapHelper).balance, 0);
+        assertEq(vault.reservesOfApp(address(poolManager), CurrencyLibrary.NATIVE), address(vault).balance);
+        assertEq(vault.getLocker(), address(0));
+        assertEq(vault.getUnsettledDeltasCount(), 0);
+    }
+
+    function testSwapTokenInForNativeOut() public {
+        key = PoolKey({
+            currency0: CurrencyLibrary.NATIVE,
+            currency1: currency1,
+            hooks: IHooks(address(0)),
+            poolManager: IPoolManager(address(poolManager)),
+            fee: uint24(3000), // 3000 = 0.3%
+            parameters: poolParam.setBinStep(10) // binStep
+        });
+        poolManager.initialize(key, activeId);
+
+        token1.mint(address(this), 3 ether);
+        IBinPoolManager.MintParams memory mintParams = _getSingleBinMintParams(activeId, 2 ether, 2 ether);
+        binLiquidityHelper.mint{value: 2 ether}(key, mintParams, "");
+
+        uint256 token1BalanceBefore = token1.balanceOf(address(this));
+        uint256 ethBalanceBefore = address(this).balance;
+        BinSwapHelper.TestSettings memory testSettings =
+            BinSwapHelper.TestSettings({withdrawTokens: true, settleUsingTransfer: true});
+        binSwapHelper.swap(key, false, -int128(1 ether), testSettings, "");
+
+        assertEq(token1.balanceOf(address(this)), token1BalanceBefore - 1 ether);
+        assertGt(address(this).balance, ethBalanceBefore);
+        assertEq(address(binSwapHelper).balance, 0);
+        assertEq(vault.reservesOfApp(address(poolManager), CurrencyLibrary.NATIVE), address(vault).balance);
+        assertEq(vault.getLocker(), address(0));
+        assertEq(vault.getUnsettledDeltasCount(), 0);
     }
 
     receive() external payable {}
