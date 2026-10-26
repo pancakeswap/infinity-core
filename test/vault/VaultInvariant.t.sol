@@ -6,7 +6,7 @@ import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 import {Vault} from "../../src/Vault.sol";
 import {BalanceDelta, toBalanceDelta} from "../../src/types/BalanceDelta.sol";
 import {IPoolManager} from "../../src/interfaces/IPoolManager.sol";
-import {Currency} from "../../src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "../../src/types/Currency.sol";
 import {PoolKey} from "../../src/types/PoolKey.sol";
 import {IVault} from "../../src/interfaces/IVault.sol";
 import {SafeCast} from "../../src/pool-bin/libraries/math/SafeCast.sol";
@@ -21,12 +21,15 @@ contract VaultPoolManager is Test {
     MockERC20 public token1;
     Currency public currency0;
     Currency public currency1;
+    Currency public nativeCurrency = CurrencyLibrary.NATIVE;
 
     uint256 public totalMintedCurrency0;
     uint256 public totalMintedCurrency1;
+    uint256 public totalMintedNative;
 
     uint256 public totalFeeCollected0;
     uint256 public totalFeeCollected1;
+    uint256 public totalFeeCollectedNative;
 
     enum ActionType {
         Take,
@@ -39,6 +42,7 @@ contract VaultPoolManager is Test {
         ActionType actionType;
         uint128 amt0;
         uint128 amt1;
+        uint128 amtNative;
     }
 
     PoolKey poolKey;
@@ -62,65 +66,75 @@ contract VaultPoolManager is Test {
     }
 
     /// @dev In take case, assume user remove liquidity and take token out of vault
-    function take(uint256 amt0, uint256 amt1) public {
+    function take(uint256 amt0, uint256 amt1, uint256 amtNative) public {
         amt0 = bound(amt0, 0, MAX_TOKEN_BALANCE);
         amt1 = bound(amt1, 0, MAX_TOKEN_BALANCE);
+        amtNative = bound(amtNative, 0, MAX_TOKEN_BALANCE);
 
         // make sure the vault has enough liquidity at very beginning
-        settle(amt0, amt1);
+        settle(amt0, amt1, amtNative);
 
-        vault.lock(abi.encode(Action(ActionType.Take, uint128(amt0), uint128(amt1))));
+        vault.lock(abi.encode(Action(ActionType.Take, uint128(amt0), uint128(amt1), uint128(amtNative))));
     }
 
     /// @dev In settle case, assume user add liquidity and paying to the vault
-    function settle(uint256 amt0, uint256 amt1) public {
+    function settle(uint256 amt0, uint256 amt1, uint256 amtNative) public {
         amt0 = bound(amt0, 0, MAX_TOKEN_BALANCE);
         amt1 = bound(amt1, 0, MAX_TOKEN_BALANCE);
+        amtNative = bound(amtNative, 0, MAX_TOKEN_BALANCE);
 
-        // mint token to VaultPoolManager, so VaultPoolManager can pay to the vault
+        // fund the manager, so it can pay to the vault
         token0.mint(address(this), amt0);
         token1.mint(address(this), amt1);
-        vault.lock(abi.encode(Action(ActionType.Settle, uint128(amt0), uint128(amt1))));
+        vm.deal(address(this), amtNative);
+        vault.lock(abi.encode(Action(ActionType.Settle, uint128(amt0), uint128(amt1), uint128(amtNative))));
     }
 
     /// @dev In mint case, assume user remove liquidity and mint nft as reciept
-    function mint(uint256 amt0, uint256 amt1) public {
+    function mint(uint256 amt0, uint256 amt1, uint256 amtNative) public {
         amt0 = bound(amt0, 0, MAX_TOKEN_BALANCE);
         amt1 = bound(amt1, 0, MAX_TOKEN_BALANCE);
+        amtNative = bound(amtNative, 0, MAX_TOKEN_BALANCE);
 
         // make sure the vault has enough liquidity at very beginning
-        settle(amt0, amt1);
+        settle(amt0, amt1, amtNative);
 
-        vault.lock(abi.encode(Action(ActionType.Mint, uint128(amt0), uint128(amt1))));
+        vault.lock(abi.encode(Action(ActionType.Mint, uint128(amt0), uint128(amt1), uint128(amtNative))));
     }
 
     /// @dev In burn case, assume user already have minted NFT and want to remove nft
-    function burn(uint256 amt0, uint256 amt1) public {
+    function burn(uint256 amt0, uint256 amt1, uint256 amtNative) public {
         amt0 = bound(amt0, 0, MAX_TOKEN_BALANCE);
         amt1 = bound(amt1, 0, MAX_TOKEN_BALANCE);
+        amtNative = bound(amtNative, 0, MAX_TOKEN_BALANCE);
 
         // pre-req VaultPoolManager minted receipt token
-        mint(amt0, amt1);
+        mint(amt0, amt1, amtNative);
 
         // VaultPoolManager burn the nft
-        vault.lock(abi.encode(Action(ActionType.Burn, uint128(amt0), uint128(amt1))));
+        vault.lock(abi.encode(Action(ActionType.Burn, uint128(amt0), uint128(amt1), uint128(amtNative))));
     }
 
     /// @dev In collectFee case, assume user already have minted NFT and want to remove nft
-    function collectFee(uint256 amt0, uint256 amt1, uint256 feeToCollect0, uint256 feeToCollect1) public {
+    function collectFee(uint256 amt0, uint256 amt1, uint256 amtNative, uint256 feeBps) public {
         amt0 = bound(amt0, 0, MAX_TOKEN_BALANCE);
         amt1 = bound(amt1, 0, MAX_TOKEN_BALANCE);
-
-        feeToCollect0 = bound(feeToCollect0, 0, amt0);
-        feeToCollect1 = bound(feeToCollect1, 0, amt1);
+        amtNative = bound(amtNative, 0, MAX_TOKEN_BALANCE);
+        feeBps = bound(feeBps, 0, 10_000);
 
         // make sure the vault has enough liquidity at very beginning
-        settle(amt0, amt1);
+        settle(amt0, amt1, amtNative);
+
+        uint256 feeToCollect0 = amt0 * feeBps / 10_000;
+        uint256 feeToCollect1 = amt1 * feeBps / 10_000;
+        uint256 feeToCollectNative = amtNative * feeBps / 10_000;
 
         vault.collectFee(currency0, feeToCollect0, makeAddr("protocolFeeRecipient"));
         vault.collectFee(currency1, feeToCollect1, makeAddr("protocolFeeRecipient"));
+        vault.collectFee(nativeCurrency, feeToCollectNative, makeAddr("protocolFeeRecipient"));
         totalFeeCollected0 += feeToCollect0;
         totalFeeCollected1 += feeToCollect1;
+        totalFeeCollectedNative += feeToCollectNative;
     }
 
     /// @dev negative balanceDelta: VaultPoolManager owes to vault
@@ -129,43 +143,55 @@ contract VaultPoolManager is Test {
         Action memory action = abi.decode(data, (Action));
 
         if (action.actionType == ActionType.Take) {
-            BalanceDelta delta = toBalanceDelta(-(int128(action.amt0)), -(int128(action.amt1)));
+            BalanceDelta delta = toBalanceDelta(int128(action.amt0), int128(action.amt1));
             vault.accountAppBalanceDelta(poolKey.currency0, poolKey.currency1, delta, address(this));
+            vault.accountAppBalanceDelta(nativeCurrency, int128(action.amtNative), address(this));
 
             vault.take(currency0, address(this), action.amt0);
             vault.take(currency1, address(this), action.amt1);
+            vault.take(nativeCurrency, address(this), action.amtNative);
         } else if (action.actionType == ActionType.Mint) {
-            BalanceDelta delta = toBalanceDelta(-(int128(action.amt0)), -(int128(action.amt1)));
+            BalanceDelta delta = toBalanceDelta(int128(action.amt0), int128(action.amt1));
             vault.accountAppBalanceDelta(poolKey.currency0, poolKey.currency1, delta, address(this));
+            vault.accountAppBalanceDelta(nativeCurrency, int128(action.amtNative), address(this));
 
             vault.mint(address(this), currency0, action.amt0);
             vault.mint(address(this), currency1, action.amt1);
+            vault.mint(address(this), nativeCurrency, action.amtNative);
             totalMintedCurrency0 += action.amt0;
             totalMintedCurrency1 += action.amt1;
+            totalMintedNative += action.amtNative;
         } else if (action.actionType == ActionType.Settle) {
-            BalanceDelta delta = toBalanceDelta(int128(action.amt0), int128(action.amt1));
+            BalanceDelta delta = toBalanceDelta(-(int128(action.amt0)), -(int128(action.amt1)));
             vault.accountAppBalanceDelta(poolKey.currency0, poolKey.currency1, delta, address(this));
+            vault.accountAppBalanceDelta(nativeCurrency, -(int128(action.amtNative)), address(this));
 
             vault.sync(currency0);
-            vault.sync(currency1);
-
             token0.transfer(address(vault), action.amt0);
-            token1.transfer(address(vault), action.amt1);
+            vault.settle();
 
+            vault.sync(currency1);
+            token1.transfer(address(vault), action.amt1);
             vault.settle();
-            vault.settle();
+
+            vault.settle{value: action.amtNative}();
         } else if (action.actionType == ActionType.Burn) {
-            BalanceDelta delta = toBalanceDelta(int128(action.amt0), int128(action.amt1));
+            BalanceDelta delta = toBalanceDelta(-(int128(action.amt0)), -(int128(action.amt1)));
             vault.accountAppBalanceDelta(poolKey.currency0, poolKey.currency1, delta, address(this));
+            vault.accountAppBalanceDelta(nativeCurrency, -(int128(action.amtNative)), address(this));
 
             vault.burn(address(this), currency0, action.amt0);
             vault.burn(address(this), currency1, action.amt1);
+            vault.burn(address(this), nativeCurrency, action.amtNative);
             totalMintedCurrency0 -= action.amt0;
             totalMintedCurrency1 -= action.amt1;
+            totalMintedNative -= action.amtNative;
         }
 
         return "";
     }
+
+    receive() external payable {}
 }
 
 contract VaultInvariant is Test, NoIsolate {
@@ -200,10 +226,15 @@ contract VaultInvariant is Test, NoIsolate {
 
         uint256 totalMintedCurrency0 = vaultPoolManager.totalMintedCurrency0();
         uint256 totalMintedCurrency1 = vaultPoolManager.totalMintedCurrency1();
+        uint256 totalMintedNative = vaultPoolManager.totalMintedNative();
 
         IPoolManager manager = IPoolManager(address(vaultPoolManager));
         assertGe(amt0Bal, vault.reservesOfApp(address(manager), vaultPoolManager.currency0()) + totalMintedCurrency0);
         assertGe(amt1Bal, vault.reservesOfApp(address(manager), vaultPoolManager.currency1()) + totalMintedCurrency1);
+        assertGe(
+            address(vault).balance,
+            vault.reservesOfApp(address(manager), vaultPoolManager.nativeCurrency()) + totalMintedNative
+        );
     }
 
     function invariant_LockDataLengthZero() public view {
@@ -227,9 +258,11 @@ contract VaultInvariant is Test, NoIsolate {
     function invariant_TotalFeeCollected() public {
         uint256 totalFeeCollected0 = vaultPoolManager.totalFeeCollected0();
         uint256 totalFeeCollected1 = vaultPoolManager.totalFeeCollected1();
+        uint256 totalFeeCollectedNative = vaultPoolManager.totalFeeCollectedNative();
 
         assertEq(totalFeeCollected0, token0.balanceOf(makeAddr("protocolFeeRecipient")));
         assertEq(totalFeeCollected1, token1.balanceOf(makeAddr("protocolFeeRecipient")));
+        assertEq(totalFeeCollectedNative, makeAddr("protocolFeeRecipient").balance);
     }
 
     function invariant_TokenBalanceInVaultGeMinted() public view {
@@ -237,6 +270,7 @@ contract VaultInvariant is Test, NoIsolate {
 
         assertGe(amt0Bal, vault.balanceOf(address(vaultPoolManager), vaultPoolManager.currency0()));
         assertGe(amt1Bal, vault.balanceOf(address(vaultPoolManager), vaultPoolManager.currency1()));
+        assertGe(address(vault).balance, vault.balanceOf(address(vaultPoolManager), vaultPoolManager.nativeCurrency()));
     }
 
     function getTokenBalanceInVault() internal view returns (uint256 amt0, uint256 amt1) {

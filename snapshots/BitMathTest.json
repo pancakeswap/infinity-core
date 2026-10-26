@@ -1,8 +1,8 @@
 {
-  "leastSignificantBitMaxUint128": "633",
-  "leastSignificantBitMaxUint256": "633",
+  "leastSignificantBitMaxUint128": "25",
+  "leastSignificantBitMaxUint256": "25",
   "leastSignificantBitSmallNumber": "25",
-  "mostSignificantBitMaxUint128": "633",
-  "mostSignificantBitMaxUint256": "633",
+  "mostSignificantBitMaxUint128": "25",
+  "mostSignificantBitMaxUint256": "25",
   "mostSignificantBitSmallNumber": "25"
 }

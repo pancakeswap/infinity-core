@@ -21,7 +21,7 @@ import {CLPoolManagerRouter} from "../test/pool-cl/helpers/CLPoolManagerRouter.s
 import {ICLPoolManager} from "../src/pool-cl/interfaces/ICLPoolManager.sol";
 import {IBinPoolManager} from "../src/pool-bin/interfaces/IBinPoolManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {Currency} from "../src/types/Currency.sol";
+import {Currency, CurrencyLibrary} from "../src/types/Currency.sol";
 import {TickMath} from "../src/pool-cl/libraries/TickMath.sol";
 import {BalanceDelta} from "../src/types/BalanceDelta.sol";
 import {BinTestHelper} from "./pool-bin/helpers/BinTestHelper.sol";
@@ -29,6 +29,7 @@ import {BinSwapHelper} from "./pool-bin/helpers/BinSwapHelper.sol";
 import {BinLiquidityHelper} from "./pool-bin/helpers/BinLiquidityHelper.sol";
 import {HooksContract} from "./libraries/Hooks/HooksContract.sol";
 import {IAccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/IAccessControlEnumerable.sol";
+import {FeeOnTransferERC20} from "./helpers/FeeOnTransferERC20.sol";
 
 contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
     using CLPoolParametersHelper for bytes32;
@@ -1192,6 +1193,76 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
         vm.stopPrank();
     }
 
+    function testCollectProtocolFees_feeOnTransferTokenCreditsReceivedBalance() public {
+        FeeOnTransferERC20 token = new FeeOnTransferERC20("FeeOnTransfer", "FOT", 18);
+        address feeCollector = address(new FeeOnTransferFeeCollector());
+        Currency currency = Currency.wrap(address(token));
+
+        uint256 accrued = 100 ether;
+        token.mint(feeCollector, accrued);
+
+        ProtocolFeeController controller = new ProtocolFeeController(feeCollector);
+        address recipient = makeAddr("recipient");
+
+        vm.expectEmit();
+        emit ProtocolFeeController.ProtocolFeeCollected(currency, accrued * 99 / 100);
+        controller.collectProtocolFee(recipient, currency, accrued);
+
+        assertEq(token.balanceOf(recipient), accrued * 99 / 100);
+        assertEq(token.balanceOf(address(0xdead)), accrued / 100);
+        assertEq(token.balanceOf(feeCollector), 0);
+    }
+
+    function testCollectProtocolFees_nativeCurrency() public {
+        vm.deal(address(this), 100 ether);
+
+        ProtocolFeeController controller = new ProtocolFeeController(address(clPoolManager));
+        clPoolManager.setProtocolFeeController(controller);
+
+        Currency native = CurrencyLibrary.NATIVE;
+        PoolKey memory key = PoolKey({
+            currency0: native,
+            currency1: currency1,
+            hooks: IHooks(address(0)),
+            poolManager: clPoolManager,
+            fee: 3000,
+            parameters: bytes32(0).setTickSpacing(10)
+        });
+        clPoolManager.initialize(key, Constants.SQRT_RATIO_1_1);
+
+        CLPoolManagerRouter router = new CLPoolManagerRouter(vault, clPoolManager);
+        IERC20(Currency.unwrap(currency1)).approve(address(router), 10000 ether);
+        router.modifyPosition{value: 10 ether}(
+            key,
+            ICLPoolManager.ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 10 ether, salt: 0}),
+            ""
+        );
+        router.swap{value: 10000}(
+            key,
+            ICLPoolManager.SwapParams({
+                zeroForOne: true, amountSpecified: -10000, sqrtPriceLimitX96: TickMath.MIN_SQRT_RATIO + 1
+            }),
+            CLPoolManagerRouter.SwapTestSettings({withdrawTokens: true, settleUsingTransfer: true}),
+            ""
+        );
+
+        uint256 accrued = clPoolManager.protocolFeesAccrued(native);
+        assertGt(accrued, 0);
+
+        address recipient = makeAddr("recipient");
+        uint256 recipientBalanceBefore = recipient.balance;
+        uint256 vaultBalanceBefore = address(vault).balance;
+
+        vm.expectEmit();
+        emit ProtocolFeeController.ProtocolFeeCollected(native, accrued);
+        controller.collectProtocolFee(recipient, native, 0);
+
+        assertEq(recipient.balance - recipientBalanceBefore, accrued);
+        assertEq(vaultBalanceBefore - address(vault).balance, accrued);
+    }
+
+    receive() external payable {}
+
     function _deployController(bool bin) internal returns (ProtocolFeeController controller) {
         address manager = bin ? address(binPoolManager) : address(clPoolManager);
         controller = new ProtocolFeeController(manager);
@@ -1260,5 +1331,13 @@ contract ProtocolFeeControllerTest is Test, BinTestHelper, TokenFixture {
             ((ONE_HUNDRED_PERCENT_RATIO / controller.protocolFeeSplitRatio() - 1) * ProtocolFeeLibrary.MAX_PROTOCOL_FEE)
                 / (ONE_HUNDRED_PERCENT_RATIO - ProtocolFeeLibrary.MAX_PROTOCOL_FEE)
         );
+    }
+}
+
+/// @dev stands in for a pool manager that already accrued fee-on-transfer tokens
+contract FeeOnTransferFeeCollector {
+    function collectProtocolFees(address recipient, Currency currency, uint256 amount) external returns (uint256) {
+        IERC20(Currency.unwrap(currency)).transfer(recipient, amount);
+        return amount;
     }
 }
